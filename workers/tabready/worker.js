@@ -1,7 +1,7 @@
 const MAGIC_LINK_EXPIRY_SECONDS = 7 * 24 * 60 * 60;
 const SESSION_EXPIRY_SECONDS = 365 * 24 * 60 * 60;
 const COOKIE_NAME = 'tabready_session';
-const VERSION = '2.9.16';
+const VERSION = '2.9.17';
 // ============================================================
 // TabReady Worker v2.9.11 (May 18, 2026)
 //   - Fix: DB binding now points to correct tabready D1 database
@@ -2946,6 +2946,13 @@ function dashboardPage(user) {
     .codes-filter-pill.active { background: var(--accent); color: #fff; }
     body.dark .codes-filter-pill { border-color: var(--accent); color: var(--accent); }
     body.dark .codes-filter-pill.active { background: var(--accent); color: #fff; }
+    .home-section-title { display: flex; align-items: center; gap: 8px;
+                          font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px;
+                          color: var(--text); padding: 6px 10px; margin: 0 0 10px;
+                          border-left: 4px solid #999; border-radius: 0 4px 4px 0;
+                          background: #f3f4f6; }
+    body.dark .home-section-title { background: #1a2030; }
+    .home-section-icon { font-size: 16px; line-height: 1; }
     .home-ref-list { display: flex; flex-direction: column; gap: 8px; }
     .home-ref-card { background: var(--card-bg,#fff); border: 1px solid var(--border,#e5e7eb);
                      border-radius: 10px; padding: 12px 14px; cursor: pointer;
@@ -4669,12 +4676,21 @@ function renderCodesHomeView() {
   }
   const byTag = {};
   refItems.forEach(c => { const t = c.event_tag || 'General'; if (!byTag[t]) byTag[t] = []; byTag[t].push(c); });
-  const tagLabels = { sunday_morning: 'Sunday Morning', living_nativity_2026: 'Living Nativity 2026', wednesday: 'Wednesday', events: 'Events', General: 'General Reference' };
+  const tagConfig = {
+    sunday_morning:       { label: 'Sunday Morning',       icon: '☀️',  color: '#d97706' },
+    living_nativity_2026: { label: 'Living Nativity 2026', icon: '🎄',  color: '#2d8659' },
+    wednesday:            { label: 'Wednesday',             icon: '📅',  color: '#7c3aed' },
+    events:               { label: 'Events',                icon: '📣',  color: '#059669' },
+    General:              { label: 'General Reference',     icon: '📋',  color: '#3b82f6' },
+  };
   const tagOrder = ['sunday_morning','living_nativity_2026','wednesday','events','General'];
   const orderedTags = [...new Set([...tagOrder,...Object.keys(byTag)])].filter(t => byTag[t]);
   el.innerHTML = orderedTags.map(tag => {
     const items = byTag[tag]; if (!items) return '';
-    return '<div class="codes-section"><div class="codes-section-title">' + esc(tagLabels[tag] || tag) + '</div><div class="home-ref-list">' +
+    const cfg = tagConfig[tag] || { label: tag, icon: '📄', color: '#6b7280' };
+    const header = '<div class="home-section-title" style="border-left-color:' + cfg.color + '">' +
+      '<span class="home-section-icon">' + cfg.icon + '</span>' + esc(cfg.label) + '</div>';
+    return '<div class="codes-section">' + header + '<div class="home-ref-list">' +
       items.map(c =>
         '<div class="home-ref-card" onclick="toggleRefCard(this)">' +
           '<div class="home-ref-title">' +
