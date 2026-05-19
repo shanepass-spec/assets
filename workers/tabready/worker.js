@@ -1,7 +1,7 @@
 const MAGIC_LINK_EXPIRY_SECONDS = 7 * 24 * 60 * 60;
 const SESSION_EXPIRY_SECONDS = 365 * 24 * 60 * 60;
 const COOKIE_NAME = 'tabready_session';
-const VERSION = '2.9.15';
+const VERSION = '2.9.16';
 // ============================================================
 // TabReady Worker v2.9.11 (May 18, 2026)
 //   - Fix: DB binding now points to correct tabready D1 database
@@ -2948,10 +2948,18 @@ function dashboardPage(user) {
     body.dark .codes-filter-pill.active { background: var(--accent); color: #fff; }
     .home-ref-list { display: flex; flex-direction: column; gap: 8px; }
     .home-ref-card { background: var(--card-bg,#fff); border: 1px solid var(--border,#e5e7eb);
-                     border-radius: 10px; padding: 12px 14px; cursor: pointer; }
+                     border-radius: 10px; padding: 12px 14px; cursor: pointer;
+                     transition: border-color .15s; }
+    .home-ref-card.open { border-color: var(--accent); }
     body.dark .home-ref-card { background: var(--card-bg-dark,#1e2530); border-color: var(--border-dark,#374151); }
-    .home-ref-title { font-size: 14px; font-weight: 600; color: var(--text); }
-    .home-ref-body { font-size: 13px; color: var(--muted); margin-top: 8px; line-height: 1.55; }
+    body.dark .home-ref-card.open { border-color: var(--accent); }
+    .home-ref-title { display: flex; justify-content: space-between; align-items: center;
+                      font-size: 14px; font-weight: 600; color: var(--text); gap: 8px; }
+    .home-ref-chevron { font-size: 12px; color: var(--accent); flex-shrink: 0; transition: transform .2s; }
+    .home-ref-card.open .home-ref-chevron { transform: rotate(90deg); }
+    .home-ref-body { font-size: 13px; color: var(--text); margin-top: 10px; line-height: 1.65;
+                     white-space: pre-wrap; border-top: 1px solid var(--border,#e5e7eb); padding-top: 10px; }
+    body.dark .home-ref-body { border-color: var(--border-dark,#374151); }
 
     /* CODES TAB */
     .codes-section { margin-bottom: 22px; }
@@ -4667,14 +4675,25 @@ function renderCodesHomeView() {
   el.innerHTML = orderedTags.map(tag => {
     const items = byTag[tag]; if (!items) return '';
     return '<div class="codes-section"><div class="codes-section-title">' + esc(tagLabels[tag] || tag) + '</div><div class="home-ref-list">' +
-      items.map(c => '<div class="home-ref-card" onclick="toggleRefCard(this)"><div class="home-ref-title">' + esc(c.title) + '</div><div class="home-ref-body" style="display:none">' + linkifyContent(c.body) + '</div></div>').join('') +
+      items.map(c =>
+        '<div class="home-ref-card" onclick="toggleRefCard(this)">' +
+          '<div class="home-ref-title">' +
+            '<span>' + esc(c.title) + '</span>' +
+            '<span class="home-ref-chevron">&#9654;</span>' +
+          '</div>' +
+          '<div class="home-ref-body" style="display:none">' + linkifyContent(c.body) + '</div>' +
+        '</div>'
+      ).join('') +
       '</div></div>';
   }).join('');
 }
 
 function toggleRefCard(el) {
   const body = el.querySelector('.home-ref-body');
-  if (body) body.style.display = body.style.display === 'none' ? '' : 'none';
+  if (!body) return;
+  const opening = body.style.display === 'none';
+  body.style.display = opening ? '' : 'none';
+  el.classList.toggle('open', opening);
 }
 
 function renderCodes() {
