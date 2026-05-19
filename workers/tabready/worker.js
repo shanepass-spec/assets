@@ -1,7 +1,7 @@
 const MAGIC_LINK_EXPIRY_SECONDS = 7 * 24 * 60 * 60;
 const SESSION_EXPIRY_SECONDS = 365 * 24 * 60 * 60;
 const COOKIE_NAME = 'tabready_session';
-const VERSION = '2.9.14';
+const VERSION = '2.9.15';
 // ============================================================
 // TabReady Worker v2.9.11 (May 18, 2026)
 //   - Fix: DB binding now points to correct tabready D1 database
@@ -2938,6 +2938,21 @@ function dashboardPage(user) {
     .capture-btn:active { transform: scale(0.98); }
     .capture-btn-plus { font-size: 22px; line-height: 1; }
 
+    /* CODES TAB — v2.9.15 filter pills */
+    .codes-filter-bar { display: flex; gap: 8px; padding: 4px 0 16px; }
+    .codes-filter-pill { flex: 1; padding: 10px 0; border-radius: 20px; border: 2px solid var(--accent);
+                         font-size: 14px; font-weight: 700; cursor: pointer; letter-spacing: .04em;
+                         background: transparent; color: var(--accent); transition: background .15s, color .15s; }
+    .codes-filter-pill.active { background: var(--accent); color: #fff; }
+    body.dark .codes-filter-pill { border-color: var(--accent); color: var(--accent); }
+    body.dark .codes-filter-pill.active { background: var(--accent); color: #fff; }
+    .home-ref-list { display: flex; flex-direction: column; gap: 8px; }
+    .home-ref-card { background: var(--card-bg,#fff); border: 1px solid var(--border,#e5e7eb);
+                     border-radius: 10px; padding: 12px 14px; cursor: pointer; }
+    body.dark .home-ref-card { background: var(--card-bg-dark,#1e2530); border-color: var(--border-dark,#374151); }
+    .home-ref-title { font-size: 14px; font-weight: 600; color: var(--text); }
+    .home-ref-body { font-size: 13px; color: var(--muted); margin-top: 8px; line-height: 1.55; }
+
     /* CODES TAB */
     .codes-section { margin-bottom: 22px; }
     .codes-section-title { font-size: 15px; font-weight: 800; text-transform: uppercase;
@@ -3433,32 +3448,46 @@ function dashboardPage(user) {
 
   <!-- CODES TAB -->
   <div class="tab-panel" id="tab-codes">
-    <a class="capture-btn" href="/capture">
-      <span class="capture-btn-plus">＋</span>
-      <span>Capture — Incident or Person</span>
-    </a>
-    <div class="card">
-      <div class="card-title">Tab Safety Flip Chart</div>
-      <div id="codes-detail-anchor"></div>
-      <div class="code-detail" id="code-detail"></div>
-      <div id="codes-sections"><div class="empty">Loading flip chart…</div></div>
-      <p style="font-size:13px;color:var(--muted);margin:16px 0 0;font-style:italic">
-        Software does not dial 911. For real emergencies, call 911 yourself: 4141 DeSoto Rd, Sarasota.
-      </p>
+    <!-- v2.9.15: Home / Codes filter pills -->
+    <div class="codes-filter-bar">
+      <button class="codes-filter-pill active" id="pill-home" onclick="setCodesView('home')">Home</button>
+      <button class="codes-filter-pill" id="pill-codes" onclick="setCodesView('codes')">Codes</button>
     </div>
-    <!-- v2.9.5: Safety Team Directory — brown header banner with phone icon -->
-    <div class="card dir-card" id="safety-directory-card" style="display:none">
-      <button type="button" class="dir-toggle" id="safety-directory-toggle"
-              onclick="toggleSafetyDirectory()" aria-expanded="false">
-        <span class="dir-toggle-label">
-          <span class="dir-toggle-icon" aria-hidden="true">📞</span>
-          <span>Safety Team Directory</span>
-          <span class="dir-count" id="safety-directory-count"></span>
-        </span>
-        <span class="dir-toggle-arrow" id="safety-directory-arrow">▸</span>
-      </button>
-      <div class="dir-body" id="safety-directory-body" style="display:none">
-        <div class="empty">Loading directory…</div>
+
+    <!-- HOME VIEW: reference + ops content -->
+    <div id="codes-view-home">
+      <div id="codes-home-content"><div class="empty">Loading…</div></div>
+    </div>
+
+    <!-- CODES VIEW: 26-card safety flip chart -->
+    <div id="codes-view-codes" style="display:none">
+      <a class="capture-btn" href="/capture">
+        <span class="capture-btn-plus">＋</span>
+        <span>Capture — Incident or Person</span>
+      </a>
+      <div class="card">
+        <div class="card-title">Tab Safety Flip Chart</div>
+        <div id="codes-detail-anchor"></div>
+        <div class="code-detail" id="code-detail"></div>
+        <div id="codes-sections"><div class="empty">Loading flip chart…</div></div>
+        <p style="font-size:13px;color:var(--muted);margin:16px 0 0;font-style:italic">
+          Software does not dial 911. For real emergencies, call 911 yourself: 4141 DeSoto Rd, Sarasota.
+        </p>
+      </div>
+      <!-- v2.9.5: Safety Team Directory -->
+      <div class="card dir-card" id="safety-directory-card" style="display:none">
+        <button type="button" class="dir-toggle" id="safety-directory-toggle"
+                onclick="toggleSafetyDirectory()" aria-expanded="false">
+          <span class="dir-toggle-label">
+            <span class="dir-toggle-icon" aria-hidden="true">📞</span>
+            <span>Safety Team Directory</span>
+            <span class="dir-count" id="safety-directory-count"></span>
+          </span>
+          <span class="dir-toggle-arrow" id="safety-directory-arrow">▸</span>
+        </button>
+        <div class="dir-body" id="safety-directory-body" style="display:none">
+          <div class="empty">Loading directory…</div>
+        </div>
       </div>
     </div>
   </div>
@@ -3633,6 +3662,7 @@ function showTab(name) {
   if (name === 'notes') loadNotes();
   if (name === 'watchlist') loadWatchList();
   if (name === 'team') loadTeam();
+  if (name === 'codes') renderCodesHomeView();
   if (name === 'ask') {
     setTimeout(function() {
       var q = document.getElementById('ask-q');
@@ -4608,6 +4638,43 @@ function toggleSafetyDirectory() {
   if (isOpen && card) {
     card.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
+}
+
+let ACTIVE_CODES_VIEW = 'home';
+
+function setCodesView(view) {
+  ACTIVE_CODES_VIEW = view;
+  document.getElementById('pill-home').classList.toggle('active', view === 'home');
+  document.getElementById('pill-codes').classList.toggle('active', view === 'codes');
+  document.getElementById('codes-view-home').style.display = view === 'home' ? '' : 'none';
+  document.getElementById('codes-view-codes').style.display = view === 'codes' ? '' : 'none';
+  if (view === 'home') renderCodesHomeView();
+}
+
+function renderCodesHomeView() {
+  const el = document.getElementById('codes-home-content');
+  if (!el) return;
+  const refItems = (CONTENT_ALL || []).filter(c => !c.is_emergency);
+  if (refItems.length === 0) {
+    el.innerHTML = '<div class="empty">No reference content available.</div>';
+    return;
+  }
+  const byTag = {};
+  refItems.forEach(c => { const t = c.event_tag || 'General'; if (!byTag[t]) byTag[t] = []; byTag[t].push(c); });
+  const tagLabels = { sunday_morning: 'Sunday Morning', living_nativity_2026: 'Living Nativity 2026', wednesday: 'Wednesday', events: 'Events', General: 'General Reference' };
+  const tagOrder = ['sunday_morning','living_nativity_2026','wednesday','events','General'];
+  const orderedTags = [...new Set([...tagOrder,...Object.keys(byTag)])].filter(t => byTag[t]);
+  el.innerHTML = orderedTags.map(tag => {
+    const items = byTag[tag]; if (!items) return '';
+    return '<div class="codes-section"><div class="codes-section-title">' + esc(tagLabels[tag] || tag) + '</div><div class="home-ref-list">' +
+      items.map(c => '<div class="home-ref-card" onclick="toggleRefCard(this)"><div class="home-ref-title">' + esc(c.title) + '</div><div class="home-ref-body" style="display:none">' + linkifyContent(c.body) + '</div></div>').join('') +
+      '</div></div>';
+  }).join('');
+}
+
+function toggleRefCard(el) {
+  const body = el.querySelector('.home-ref-body');
+  if (body) body.style.display = body.style.display === 'none' ? '' : 'none';
 }
 
 function renderCodes() {
