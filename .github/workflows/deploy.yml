@@ -25,13 +25,10 @@ jobs:
       - id: set
         run: |
           if [ -n "${{ github.event.inputs.worker }}" ]; then
-            # Manual trigger with specific worker
             WORKERS='["${{ github.event.inputs.worker }}"]'
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # Manual trigger, no worker specified — deploy all
             WORKERS=$(ls workers/ | jq -R -s -c 'split("\n")[:-1]')
           else
-            # Push — detect changed workers
             WORKERS=$(git diff --name-only HEAD~1 HEAD \
               | grep '^workers/' \
               | cut -d'/' -f2 \
@@ -80,10 +77,21 @@ jobs:
 
           echo "🚀 Deploying $WORKER from $DIR/$ENTRY ..."
 
+          # Fetch current bindings so D1/R2/KV are preserved across deploys.
+          # Secret text bindings (API keys, etc.) are stored separately by
+          # Cloudflare and persist automatically — we exclude them here.
+          BINDINGS_JSON=$(curl -s \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/$WORKER/bindings" \
+            -H "Authorization: Bearer $CF_API_TOKEN")
+          BINDINGS=$(echo "$BINDINGS_JSON" | jq -c '[.result // [] | .[] | select(.type != "secret_text")]')
+          echo "Preserving bindings: $BINDINGS"
+
+          METADATA=$(printf '{"main_module":"%s","compatibility_date":"2024-09-23","bindings":%s}' "$ENTRY" "$BINDINGS")
+
           RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/$WORKER" \
             -H "Authorization: Bearer $CF_API_TOKEN" \
-            -F "metadata={\"main_module\":\"$ENTRY\",\"compatibility_date\":\"2024-09-23\"};type=application/json" \
+            -F "metadata=$METADATA;type=application/json" \
             -F "$ENTRY=@$DIR/$ENTRY;type=application/javascript+module")
 
           HTTP_CODE=$(echo "$RESPONSE" | tail -1)
