@@ -1,0 +1,100 @@
+name: Deploy Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'workers/**'
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: 'Worker name to deploy (e.g. tabready). Leave blank to deploy all changed.'
+        required: false
+        default: ''
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - id: set
+        run: |
+          if [ -n "${{ github.event.inputs.worker }}" ]; then
+            # Manual trigger with specific worker
+            WORKERS='["${{ github.event.inputs.worker }}"]'
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual trigger, no worker specified — deploy all
+            WORKERS=$(ls workers/ | jq -R -s -c 'split("\n")[:-1]')
+          else
+            # Push — detect changed workers
+            WORKERS=$(git diff --name-only HEAD~1 HEAD \
+              | grep '^workers/' \
+              | cut -d'/' -f2 \
+              | sort -u \
+              | jq -R -s -c 'split("\n")[:-1]')
+          fi
+          echo "Deploying: $WORKERS"
+          echo "matrix=$WORKERS" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: detect
+    if: needs.detect.outputs.matrix != '[]' && needs.detect.outputs.matrix != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        worker: ${{ fromJson(needs.detect.outputs.matrix) }}
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy ${{ matrix.worker }}
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          WORKER="${{ matrix.worker }}"
+          DIR="workers/$WORKER"
+
+          if [ ! -d "$DIR" ]; then
+            echo "❌ Directory $DIR not found — skipping"
+            exit 1
+          fi
+
+          # Determine entry file
+          if [ -f "$DIR/index.js" ]; then
+            ENTRY="index.js"
+          else
+            ENTRY="worker.js"
+          fi
+
+          if [ ! -f "$DIR/$ENTRY" ]; then
+            echo "❌ No $ENTRY found in $DIR — skipping"
+            exit 1
+          fi
+
+          echo "🚀 Deploying $WORKER from $DIR/$ENTRY ..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/$WORKER" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -F "metadata={\"main_module\":\"$ENTRY\",\"compatibility_date\":\"2024-09-23\"};type=application/json" \
+            -F "$ENTRY=@$DIR/$ENTRY;type=application/javascript+module")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP $HTTP_CODE"
+
+          if echo "$BODY" | grep -q '"success":true'; then
+            echo "✅ $WORKER deployed successfully"
+          else
+            echo "❌ Deploy failed for $WORKER"
+            echo "$BODY"
+            exit 1
+          fi
