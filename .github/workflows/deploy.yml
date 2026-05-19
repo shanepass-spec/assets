@@ -91,10 +91,10 @@ jobs:
 
           echo "HTTP $HTTP_CODE"
 
-          if echo "$BODY" | grep -q '"success":true'; then
+          if [ "$HTTP_CODE" = "200" ]; then
             echo "✅ $WORKER deployed successfully"
           else
-            echo "❌ Deploy failed for $WORKER"
+            echo "❌ Deploy failed for $WORKER (HTTP $HTTP_CODE)"
             echo "$BODY"
             exit 1
           fi
