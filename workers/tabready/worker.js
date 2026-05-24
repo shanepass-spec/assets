@@ -1,7 +1,97 @@
-const MAGIC_LINK_EXPIRY_SECONDS = 7 * 24 * 60 * 60;
-const SESSION_EXPIRY_SECONDS = 365 * 24 * 60 * 60;
+const VERSION = '2.9.35b';
+// v2.9.35 — Three additions, no schema/D1 change, no server data model change:
+//   (1) MAP DELETE: admin-only Delete button on each facilities-map card +
+//       /api/facilities-maps/delete (R2 .delete by key, gated to map folders).
+//   (2) SEARCH everywhere long lists scroll: global packet search at the top
+//       of Manage Content (searches ALL teams' packets at once, opens any
+//       result directly, Back returns to the search); a name filter on the
+//       Facilities Maps tab (client-side over cached list); a title/body
+//       filter on the Reference view (auto-opens matching categories).
+//   (3) Map list is now cached client-side so search re-renders with no refetch.
+// v2.9.34 — Facilities maps: organize by BUILDING + TYPE, and FIX naming.
+//   Upload form gets two dropdowns (Building, Type) chosen per batch. The
+//   selected file's own filename now becomes the map's display name (the
+//   v2.9.33 multi-file path sent an EMPTY label, so batches were named
+//   'Map <timestamp>' — that is fixed here). The R2 key now encodes
+//   building + type + name: `<folder>/<building>__<type>__<name>-<ts>.<ext>`
+//   so grouping/labels survive with NO D1 or schema change. The maps grid
+//   now groups cards under collapsible BUILDING sections (same carat /
+//   accordion pattern as Reference) with a small TYPE tag per card.
+//   uploadMapToR2 / R2 binding / 15MB cap / broad-safety split / PDF tile
+//   all UNCHANGED in behavior.
+// v2.9.33 — Facilities maps: multi-file upload. The file input now takes
+//   `multiple`; uploadFacilitiesMap loops the selected files through the
+//   SAME single-file endpoint (one POST each), showing 'Uploading N of M'
+//   progress and a per-file failure summary. Single file still uses the
+//   name box; multiple files ignore it and each file's own name carries.
+//   SERVER UNCHANGED (apiFacilitiesMapUpload / uploadMapToR2). Client-only.
+// v2.9.32 — Facilities maps now accept PDF (not just images). New
+//   uploadMapToR2() takes jpg/png/webp/heic AND pdf, up to 15 MB, and
+//   stores the right content-type so handlePhotoServe serves it. The
+//   shared uploadPhotoToR2() is UNCHANGED — incident/watch/note photos
+//   stay image-only. renderMapGrid shows a document tile for .pdf keys;
+//   images still thumbnail. File input accepts pdf. No regex literals
+//   added inside the dashboardPage template.
+// v2.9.31 — Reference view is now parent->child. Categories are collapsed
+//   carat rows (closed by default); tap a category to reveal its cards,
+//   accordion-style (opening one closes the others) so the list never
+//   grows past one open group. Children keep the title-row -> packetize
+//   body behavior. Matches the carat-collapse pattern already used by
+//   Codes and My Team. No schema change, no regex literals.
+// v2.9.30 — Reference LIST now uses the same packetize() phone-box/data-box
+//   renderer as the content detail view, so facilities/vendor cards look
+//   consistent everywhere. Two surgical changes only: (1) wrap the
+//   home-ref-body in packetize(linkifyContent(...)); (2) .home-ref-body
+//   white-space pre-wrap -> normal so the boxes carry their own spacing.
+//   No regex literals added; packetize() is template-safe (new RegExp).
+// v2.9.29 — Facilities packets: two-box render (phone box + data box, phone-first,
+//   low eye strain) via new packetize() on the content detail body. Map uploader:
+//   admin-only upload form on Facilities Maps tab + /api/facilities-maps/upload POST
+//   (reuses uploadPhotoToR2; broad or safety scope). No regex literals in template.
+// v2.9.28 — Reference UI cleanup: "Content"→"Reference" label (tab/action/title);
+//   neutral Request-a-Change placeholder (no real name/number); stronger section
+//   dividers (6px bar, more top space); added People/Vendors/Equipment groups to
+//   the Reference tagConfig/tagOrder (styled buckets, populated by D1 tagging next).
+// v2.9.25 — Restored auth constants (dropped by MCP code-pull bundling).
+// If the original COOKIE_NAME differed, active users get one harmless re-login.
 const COOKIE_NAME = 'tabready_session';
-const VERSION = '2.9.17';
+const SESSION_EXPIRY_SECONDS = 60 * 60 * 24 * 30; // 30 days
+const MAGIC_LINK_EXPIRY_SECONDS = 60 * 15; // 15 minutes
+// ============================================================
+// TabReady Worker v2.9.24 (May 21, 2026)
+//   - PHASE 1 of notification alerts: in-app toast banner + sound +
+//     vibrate when a NEW notification arrives while the app is open.
+//     No permissions, works on silent (vibrate), no schema change.
+//   - Added a 20s poll loop (was: alerts only refreshed on page load /
+//     after post/delete). Poll calls loadAlerts() AND a new
+//     watchForNewAlerts() that diffs against seen IDs and toasts.
+//   - First load seeds the seen-set silently (no toast storm on open).
+//   - All client logic is plain string concat + DOM APIs (no backticks,
+//     no regex literals) to survive the dashboardPage template literal.
+//   - Phase 2 (web push for closed phones) intentionally NOT included.
+// ============================================================
+// TabReady Worker v2.9.23 (May 20, 2026)
+//   - CRITICAL FIX: v2.9.21 pillifyContacts used raw \n and regex literals
+//     INSIDE the dashboardPage template literal, which the template stripped,
+//     producing a SyntaxError that crashed the whole page (stuck "Loading…").
+//     Rewrote pillifyContacts AND linkifyContent to build every regex with
+//     new RegExp + quadruple-backslash strings, and newline via charCode.
+//   - Bonus: this also fixes a long-standing bug where phone/email tap-links
+//     never worked (their regex literals were silently eaten the same way).
+//   - Carries v2.9.22 session fix (credentials:'same-origin' on core loaders).
+// ============================================================
+// TabReady Worker v2.9.21 (May 20, 2026)
+//   - Code detail: tap the colored header (carat) to collapse instantly —
+//     escape hatch for a wrong tap, no scrolling to the Close button.
+//     Opens fully expanded so protocol is visible immediately.
+//   - Contact lines (Medical team, Lead, etc.) now render as tappable
+//     pill boxes instead of plain text. Lead gets the green ★ pill.
+// ============================================================
+// TabReady Worker v2.9.20 (May 20, 2026)
+//   - Admin content list: each packet now collapses to title + carat,
+//     taps to expand (no more scrolling through long bodies). Edit link
+//     stops propagation so it doesn't toggle.
+//   - Codes filter pill renamed "Home" -> "Reference" for clarity.
 // ============================================================
 // TabReady Worker v2.9.11 (May 18, 2026)
 //   - Fix: DB binding now points to correct tabready D1 database
@@ -198,6 +288,8 @@ export default {
       // ── v2.5: TEAM NOTES API ──
       if (path === '/api/notes' && method === 'GET') return await apiNotesList(request, env);
       if (path === '/api/notes' && method === 'POST') return await apiNoteCreate(request, env);
+      if (path === '/api/change-requests' && method === 'GET') return await apiChangeRequestsList(request, env);
+      if (path === '/api/change-requests' && method === 'POST') return await apiChangeRequestCreate(request, env);
 
       // ── v2.5: WATCH LIST API ──
       if (path === '/api/watch-list' && method === 'GET') return await apiWatchListList(request, env);
@@ -227,6 +319,13 @@ export default {
       // Serve a photo from R2 (auth-gated)
       const photoMatch = path.match(/^\/photo\/([a-zA-Z0-9_\-\/\.]+)$/);
       if (photoMatch && method === 'GET') return await handlePhotoServe(request, env, photoMatch[1]);
+
+      // ── v2.9.25: FACILITIES MAPS LIST ──
+      if (path === '/api/facilities-maps' && method === 'GET') return await apiFacilitiesMaps(request, env);
+      // ── v2.9.29: FACILITIES MAP UPLOAD (admin only) ──
+      if (path === '/api/facilities-maps/upload' && method === 'POST') return await apiFacilitiesMapUpload(request, env);
+      // ── v2.9.35: FACILITIES MAP DELETE (admin only) ──
+      if (path === '/api/facilities-maps/delete' && method === 'POST') return await apiFacilitiesMapDelete(request, env);
 
       // ── CAPTURE PAGES ──
       if (path === '/capture' && method === 'GET') return await handleCaptureMenu(request, env);
@@ -717,14 +816,68 @@ function detectWebsiteCategories(question) {
   return Array.from(cats);
 }
 
+// v2.9.18: Forward question to tab-website-ai for doctrinal / connect /
+// events / staff / location / etc. Uses the website's full system prompt
+// (Pastor Dwain voice, source priority, hallucination filter, sermon
+// append). Returns { ok, reply, error }.
+// v2.9.19: Now accepts conversation history so multi-turn doctrinal
+// conversations stay coherent (matching website chat behavior).
+async function forwardToWebsiteAI(question, history) {
+  try {
+    const safeHistory = Array.isArray(history)
+      ? history.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string').slice(-6)
+      : [];
+    const res = await fetch('https://tab-website-ai.shanepass.workers.dev/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: question, history: safeHistory })
+    });
+    if (!res.ok) return { ok: false, error: 'http_' + res.status };
+    const data = await res.json();
+    if (data.error) return { ok: false, error: data.error };
+    const reply = (data.reply || '').toString().trim();
+    if (!reply) return { ok: false, error: 'empty_reply' };
+    return { ok: true, reply };
+  } catch (err) {
+    return { ok: false, error: 'fetch_failed' };
+  }
+}
+
 async function apiAsk(request, env) {
   const user = await getUserFromRequest(request, env);
   if (!user) return json({ error: 'not_authenticated' }, 401);
   const body = await request.json().catch(() => ({}));
   const question = (body.question || '').toString().trim();
+  const clientHistory = Array.isArray(body.history) ? body.history : [];
   if (!question) return json({ error: 'question_required' }, 400);
   if (!env.ANTHROPIC_API_KEY) return json({ error: 'ai_not_configured' }, 500);
 
+  // v2.9.18: ROUTER — if the question is clearly doctrinal, connect,
+  // ministries, events, giving, staff, location, services, watch, etc.,
+  // forward to tab-website-ai for the full Pastor Dwain engine.
+  // Operational questions (codes, supplies, role checklists, schedules)
+  // stay local. If the forward fails, fall through to local logic so
+  // the user still gets an answer.
+  const wantedCats = detectWebsiteCategories(question);
+  if (wantedCats.length > 0) {
+    const forwarded = await forwardToWebsiteAI(question, clientHistory);
+    if (forwarded.ok) {
+      try {
+        await env.DB.prepare(
+          'INSERT INTO ask_log (user_id, question, answer) VALUES (?, ?, ?)'
+        ).bind(user.id, question, forwarded.reply).run();
+        await audit(env, user.id, 'ask_question', {
+          question_length: question.length,
+          route: 'website_ai',
+          categories: wantedCats
+        });
+      } catch (e) { console.error('ask_log forward path failed:', e); }
+      return json({ answer: forwarded.reply });
+    }
+    console.error('Website AI forward failed, falling back to local:', forwarded.error);
+  }
+
+  // LOCAL PATH — operational questions, or fallback if website AI was down.
   // 1. Always pull TabReady operational content (role-filtered)
   const all = await env.DB.prepare(
     `SELECT id, title, body, tier, role_tags, event_tag, language, source
@@ -748,9 +901,9 @@ async function apiAsk(request, env) {
       }).join('\n\n');
 
   // 2. v2.7: Pull tab-website-content rows by detected categories
+  // (wantedCats was already declared at the top of apiAsk for the router)
   let websiteBlock = '';
   let websiteCount = 0;
-  const wantedCats = detectWebsiteCategories(question);
   if (wantedCats.length > 0 && env.CONTENT_DB) {
     try {
       const placeholders = wantedCats.map(() => '?').join(',');
@@ -787,6 +940,12 @@ async function apiAsk(request, env) {
     '  - Operational matters (codes, safety, schedules, role checklists, classroom locations) — from TABREADY CONTENT below.',
     '  - Beliefs, doctrine, faith, salvation, "how do I receive Jesus" — from TABERNACLE TEACHING CONTENT below (Pastor Dwain Kitchens\' voice).',
     '  - Connect, membership, ministries, events, giving, staff, location, parking — from TABERNACLE TEACHING CONTENT below.',
+    '',
+    'OUTPUT FORMAT — STRICT:',
+    '- Plain prose. NO markdown. NO bold (no **). NO underscores. NO headers (no #). NO bullet stars.',
+    '- DO NOT prefix the answer with "Q:" or "A:" or "Answer:" or "Question:". Just answer.',
+    '- Lead with the answer. Short, direct, scannable on a phone.',
+    '- Phone numbers, addresses, and URLs from the content may be included verbatim. Do not invent any.',
     '',
     'VOICE RULES:',
     '- Pastoral-practical. Warm, clear, restrained. No hype. No performative emotion. No preachiness.',
@@ -840,6 +999,13 @@ async function apiAsk(request, env) {
     }
     const data = await aiRes.json();
     answer = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim() || '(No answer returned.)';
+    // v2.9.18: belt-and-suspenders sanitization in case the model
+    // ignores the no-Q/A and no-markdown instructions in the system prompt.
+    answer = answer
+      .replace(/^\s*(Q|Question):\s*[^\n]*\n+/i, '')
+      .replace(/^\s*(A|Answer):\s*/i, '')
+      .replace(/\*\*/g, '')
+      .replace(/__/g, '');
   } catch (err) {
     console.error('Ask Tab fetch failed:', err);
     return json({ error: 'ai_request_failed' }, 502);
@@ -1021,6 +1187,83 @@ async function apiNoteCreate(request, env) {
   } catch (err) {
     console.error('Note create failed:', err);
     return json({ error: 'create_failed', message: err.message }, 500);
+  }
+}
+
+// v2.9.26: Change-request capture. Any user can file a request to edit TabReady
+// content/directory/etc. Writes to change_requests in D1 and emails the admin.
+async function apiChangeRequestCreate(request, env) {
+  const user = await getUserFromRequest(request, env);
+  if (!user) return json({ error: 'not_authenticated' }, 401);
+
+  const body = await request.json().catch(() => ({}));
+  const reqBody = (body.body || '').toString().trim();
+  const reqType = (body.request_type || 'edit').toString().trim();
+  if (!reqBody) return json({ error: 'body_required' }, 400);
+
+  const id = crypto.randomUUID();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO change_requests (id, reporter_user_id, reporter_name, reporter_email, request_type, body)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(id, user.id, user.display_name || '', user.email || '', reqType, reqBody).run();
+    await auditV2(env, user.id, 'change_request_filed', 'change_request', id, {
+      request_type: reqType, body_length: reqBody.length
+    });
+    // Email the admin. Non-fatal if it fails — the request is already saved.
+    try { await sendChangeRequestEmail(env, { reporter_name: user.display_name, reporter_email: user.email, request_type: reqType, body: reqBody, id }); }
+    catch (e) { console.error('Change-request email failed:', e); }
+    return json({ ok: true, id });
+  } catch (err) {
+    console.error('Change request create failed:', err);
+    return json({ error: 'create_failed', message: err.message }, 500);
+  }
+}
+
+async function sendChangeRequestEmail(env, req) {
+  const html = `
+    <div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
+      <div style="font-size: 13px; color: #6d3d31; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; margin-bottom: 8px;">TabReady — Change Request</div>
+      <table style="width:100%;border-collapse:collapse;font-size:14px;color:#1a1a1a;">
+        <tr><td style="padding:6px 0;color:#6b7280;width:120px;">From:</td><td style="padding:6px 0;"><strong>${escapeHtml(req.reporter_name || 'Unknown')}</strong></td></tr>
+        <tr><td style="padding:6px 0;color:#6b7280;">Email:</td><td style="padding:6px 0;">${escapeHtml(req.reporter_email || '')}</td></tr>
+        <tr><td style="padding:6px 0;color:#6b7280;">Type:</td><td style="padding:6px 0;">${escapeHtml(req.request_type || 'edit')}</td></tr>
+        <tr><td style="padding:6px 0;color:#6b7280;">Request ID:</td><td style="padding:6px 0;font-family:monospace;font-size:12px;">${escapeHtml(req.id)}</td></tr>
+      </table>
+      <div style="margin-top: 20px; padding: 16px; background: #f7f6f2; border: 1px solid #e5e3dd; border-radius: 8px;">
+        <div style="font-size: 12px; color: #6d3d31; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; font-weight: 600;">Request</div>
+        <div style="font-size: 14px; line-height: 1.6; color: #1a1a1a; white-space: pre-wrap;">${escapeHtml(req.body)}</div>
+      </div>
+      <p style="color: #999; font-size: 11px; margin-top: 16px;">The Tabernacle Church · 4141 DeSoto Rd, Sarasota, FL</p>
+    </div>`;
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from: RESEND_FROM_ADDRESS, to: 'spass@thetabsarasota.org',
+      subject: `[TabReady] Change Request — ${req.reporter_name || 'someone'}`, html
+    })
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error('email_send_failed: ' + err.substring(0, 200));
+  }
+}
+
+// v2.9.26: Admin-only list of change requests (newest first).
+async function apiChangeRequestsList(request, env) {
+  const user = await getUserFromRequest(request, env);
+  if (!user) return json({ error: 'not_authenticated' }, 401);
+  if (!user.is_global_admin) return json({ error: 'not_allowed' }, 403);
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT id, reporter_name, reporter_email, request_type, body, status, created_at
+       FROM change_requests ORDER BY created_at DESC LIMIT 200`
+    ).all();
+    return json({ items: rows.results || [] });
+  } catch (err) {
+    console.error('Change requests list failed:', err);
+    return json({ error: 'list_failed', message: err.message }, 500);
   }
 }
 
@@ -1402,6 +1645,21 @@ function canPostWatchList(user) {
   return user.roles.includes('safety');
 }
 
+// v2.9.25 — Facilities maps permissions
+function canSeeFacilitiesMap(user) {
+  if (!user) return false;
+  if (user.is_global_admin) return true;
+  if (!Array.isArray(user.roles)) return false;
+  return user.roles.some(r => ['safety', 'safety_consultant', 'staff', 'greeters', 'director'].includes(r));
+}
+
+function canSeeFacilitiesMapSafety(user) {
+  if (!user) return false;
+  if (user.is_global_admin) return true;
+  if (!Array.isArray(user.roles)) return false;
+  return user.roles.some(r => ['safety', 'safety_consultant', 'director'].includes(r));
+}
+
 async function getAllRoles(env) {
   const res = await env.DB.prepare('SELECT id, display_name FROM roles ORDER BY id').all();
   return res.results || [];
@@ -1630,6 +1888,10 @@ async function handlePhotoServe(request, env, key) {
     allowed = canSeeWatchList(user);
   } else if (folder === 'team_note') {
     allowed = true;
+  } else if (folder === 'facilities-map') {
+    allowed = canSeeFacilitiesMap(user);
+  } else if (folder === 'facilities-map-safety') {
+    allowed = canSeeFacilitiesMapSafety(user);
   }
   if (!allowed) return new Response('Forbidden', { status: 403 });
 
@@ -1646,6 +1908,175 @@ async function handlePhotoServe(request, env, key) {
     console.error('Photo serve failed:', err);
     return new Response('Server error', { status: 500 });
   }
+}
+
+// ═════════════════════════════════════════════════════════════
+// v2.9.25 — FACILITIES MAPS (R2 list, role-gated by tier)
+// ═════════════════════════════════════════════════════════════
+
+// v2.9.34: keys may be encoded as `<folder>/<building>__<type>__<name>-<ts>.<ext>`.
+// Older keys (pre-2.9.34) have no `__` separators — those fall back to the
+// whole filename as the name, with building/type 'general'. Returns an object
+// so the list can group by building and tag by type.
+function prettyMapName(key) {
+  var base = key.split('/').pop() || key;
+  base = base.replace(/\.[a-zA-Z0-9]+$/, '');
+  var building = 'general';
+  var type = 'general';
+  var namePart = base;
+  if (base.indexOf('__') !== -1) {
+    var parts = base.split('__');
+    if (parts.length >= 3) {
+      building = parts[0] || 'general';
+      type = parts[1] || 'general';
+      namePart = parts.slice(2).join('__');
+    }
+  }
+  // Strip the trailing -<timestamp> we append on upload (13+ digit run at end).
+  namePart = namePart.replace(/-\d{10,}$/, '');
+  namePart = namePart.replace(/[-_]+/g, ' ').trim();
+  if (!namePart) namePart = 'Map';
+  var display = namePart.charAt(0).toUpperCase() + namePart.slice(1);
+  return { name: display, building: building, type: type };
+}
+
+async function apiFacilitiesMaps(request, env) {
+  const user = await getUserFromRequest(request, env);
+  if (!user) return json({ error: 'not_authenticated' }, 401);
+  if (!env.PHOTOS) return json({ broad: [], safety: [], note: 'r2_not_configured' });
+
+  const canBroad = canSeeFacilitiesMap(user);
+  const canSafety = canSeeFacilitiesMapSafety(user);
+  if (!canBroad && !canSafety) return json({ error: 'forbidden' }, 403);
+
+  const broad = [];
+  const safety = [];
+
+  try {
+    if (canBroad) {
+      const listed = await env.PHOTOS.list({ prefix: 'facilities-map/' });
+      (listed.objects || []).forEach(function(o) {
+        if (o.key && o.key !== 'facilities-map/') {
+          var meta = prettyMapName(o.key);
+          broad.push({ key: o.key, name: meta.name, building: meta.building, type: meta.type, url: '/photo/' + o.key });
+        }
+      });
+    }
+    if (canSafety) {
+      const listedS = await env.PHOTOS.list({ prefix: 'facilities-map-safety/' });
+      (listedS.objects || []).forEach(function(o) {
+        if (o.key && o.key !== 'facilities-map-safety/') {
+          var metaS = prettyMapName(o.key);
+          safety.push({ key: o.key, name: metaS.name, building: metaS.building, type: metaS.type, url: '/photo/' + o.key });
+        }
+      });
+    }
+  } catch (err) {
+    console.error('Facilities maps list failed:', err);
+    return json({ error: 'list_failed' }, 500);
+  }
+
+  broad.sort(function(a, b) { return a.name.localeCompare(b.name); });
+  safety.sort(function(a, b) { return a.name.localeCompare(b.name); });
+  return json({ broad: broad, safety: safety });
+}
+
+// v2.9.32: Maps-only uploader. Accepts images (jpg/png/webp/heic) AND PDF.
+// Kept separate from uploadPhotoToR2 so incident/watch-list/note photos stay
+// image-only. Stores correct content-type so handlePhotoServe serves it right.
+async function uploadMapToR2(env, file, folder, recordId) {
+  if (!env.PHOTOS) return { ok: false, error: 'r2_not_configured' };
+  // Maps can be larger than snapshots (multi-page PDFs). Allow up to 15 MB.
+  var MAX_MAP_BYTES = 15 * 1024 * 1024;
+  if (file.size > MAX_MAP_BYTES) return { ok: false, error: 'map_too_large_max_15mb' };
+  var contentType = file.type || 'application/octet-stream';
+  var isPdf = /pdf/i.test(contentType) || /\.pdf$/i.test(file.name || '');
+  var isImage = /^image\/(jpeg|jpg|png|webp|heic|heif)$/i.test(contentType);
+  if (!isPdf && !isImage) return { ok: false, error: 'invalid_map_type_image_or_pdf' };
+  var ext = 'jpg';
+  if (isPdf) { ext = 'pdf'; contentType = 'application/pdf'; }
+  else if (/png/i.test(contentType)) ext = 'png';
+  else if (/webp/i.test(contentType)) ext = 'webp';
+  else if (/heic|heif/i.test(contentType)) ext = 'heic';
+  var ts = Date.now();
+  var key = `${folder}/${recordId}-${ts}.${ext}`;
+  try {
+    var arrayBuffer = await file.arrayBuffer();
+    await env.PHOTOS.put(key, arrayBuffer, {
+      httpMetadata: { contentType: contentType },
+      customMetadata: { folder: folder, record_id: recordId, uploaded_at: new Date().toISOString() }
+    });
+    return { ok: true, key: key };
+  } catch (err) {
+    console.error('R2 map upload failed:', err);
+    return { ok: false, error: 'r2_upload_failed' };
+  }
+}
+
+// v2.9.29: Admin-only facilities map upload.
+// v2.9.34: now also reads `building` and `type` and derives the display name
+// from the uploaded file's own filename (falling back to the label box for a
+// single upload). The recordId encodes building__type__name so the list can
+// group/label without any D1 change.
+async function apiFacilitiesMapUpload(request, env) {
+  const user = await getUserFromRequest(request, env);
+  if (!user) return json({ error: 'unauthorized' }, 401);
+  if (!user.is_global_admin) return json({ error: 'forbidden' }, 403);
+  let form;
+  try { form = await request.formData(); }
+  catch (err) { return json({ error: 'bad_form' }, 400); }
+  const file = form.get('map');
+  const scope = (form.get('scope') || 'broad').toString();
+  let label = (form.get('label') || '').toString().trim();
+  const building = (form.get('building') || 'general').toString().trim() || 'general';
+  const type = (form.get('type') || 'general').toString().trim() || 'general';
+  if (!file || typeof file === 'string') return json({ error: 'no_file' }, 400);
+  const folder = scope === 'safety' ? 'facilities-map-safety' : 'facilities-map';
+  var safeRe = new RegExp('[^a-zA-Z0-9]+', 'g');
+  var trimRe = new RegExp('^-+|-+$', 'g');
+  function slug(s) {
+    return (s || '').replace(safeRe, '-').replace(trimRe, '').toLowerCase();
+  }
+  // Name source: explicit label if given, else the file's own name (minus ext).
+  var rawName = label;
+  if (!rawName) {
+    rawName = (file.name || 'map').toString().replace(/\.[a-zA-Z0-9]+$/, '');
+  }
+  var nameSlug = slug(rawName) || 'map';
+  var buildingSlug = slug(building) || 'general';
+  var typeSlug = slug(type) || 'general';
+  // Encoded recordId: building__type__name  (uploadMapToR2 appends -<ts>.<ext>)
+  var recordId = buildingSlug + '__' + typeSlug + '__' + nameSlug;
+  const result = await uploadMapToR2(env, file, folder, recordId);
+  if (!result.ok) return json({ error: result.error }, 400);
+  await audit(env, user.id, 'facilities_map_uploaded', { key: result.key, scope: folder, building: buildingSlug, type: typeSlug });
+  return json({ ok: true, key: result.key });
+}
+
+// v2.9.35: Admin-only facilities map delete. Removes one R2 object by its key.
+// Key is validated against the two map folders so this endpoint can only ever
+// delete a facilities map — never any other R2 object (incident photos, etc).
+async function apiFacilitiesMapDelete(request, env) {
+  const user = await getUserFromRequest(request, env);
+  if (!user) return json({ error: 'unauthorized' }, 401);
+  if (!user.is_global_admin) return json({ error: 'forbidden' }, 403);
+  if (!env.PHOTOS) return json({ error: 'r2_not_configured' }, 400);
+  let payload;
+  try { payload = await request.json(); }
+  catch (err) { return json({ error: 'bad_json' }, 400); }
+  const key = (payload && payload.key ? String(payload.key) : '').trim();
+  if (!key) return json({ error: 'no_key' }, 400);
+  // Safety gate: only allow deleting objects inside the map folders.
+  const okPrefix = key.indexOf('facilities-map/') === 0 || key.indexOf('facilities-map-safety/') === 0;
+  if (!okPrefix) return json({ error: 'not_a_map_key' }, 400);
+  try {
+    await env.PHOTOS.delete(key);
+  } catch (err) {
+    console.error('Facilities map delete failed:', err);
+    return json({ error: 'delete_failed' }, 500);
+  }
+  await audit(env, user.id, 'facilities_map_deleted', { key: key });
+  return json({ ok: true, key: key });
 }
 
 // ═════════════════════════════════════════════════════════════
@@ -2676,6 +3107,8 @@ function dashboardPage(user) {
   const canSeeWatchListFlag = canSeeWatchList(user) ? 'true' : 'false';
   const canPostWatchListFlag = canPostWatchList(user) ? 'true' : 'false';
   const isGlobalAdminFlag = user.is_global_admin ? 'true' : 'false';
+  const canSeeFacilitiesMapFlag = canSeeFacilitiesMap(user) ? 'true' : 'false';
+  const canSeeFacilitiesMapSafetyFlag = canSeeFacilitiesMapSafety(user) ? 'true' : 'false';
   const meUserIdJson = JSON.stringify(user.id || '');
 
   return new Response(`<!DOCTYPE html>
@@ -2798,6 +3231,40 @@ function dashboardPage(user) {
     .card-title { font-size: 13px; font-weight: 700; text-transform: uppercase;
                   letter-spacing: 0.7px; color: var(--muted); margin-bottom: 10px; }
     .empty { color: var(--muted); font-size: 15px; text-align: center; padding: 16px; }
+    .map-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .map-card { display: block; text-decoration: none; color: inherit; border: 1px solid var(--border);
+      border-radius: 10px; overflow: hidden; background: var(--card); }
+    .map-thumb { width: 100%; aspect-ratio: 4 / 3; background: #f0ece6; overflow: hidden;
+      display: flex; align-items: center; justify-content: center; }
+    .map-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .map-name { padding: 8px 10px; font-size: 14px; font-weight: 600; }
+    /* v2.9.32: PDF maps show a document tile instead of an image thumbnail */
+    .map-thumb-pdf { flex-direction: column; gap: 4px; background: #f3ede4; color: #6d3d31; }
+    .map-pdf-icon { font-size: 34px; line-height: 1; }
+    .map-pdf-tag { font-size: 11px; font-weight: 800; letter-spacing: 1px; }
+    body.dark .map-thumb-pdf { background: #2a2420; color: #d6c9b8; }
+    /* v2.9.34: maps grouped by building under collapsible carat headers. */
+    .map-bldg { margin-bottom: 8px; }
+    .map-bldg-header { display: flex; align-items: center; gap: 8px; cursor: pointer;
+      -webkit-tap-highlight-color: transparent; padding: 10px 12px; border-radius: 10px;
+      background: var(--card); border: 1px solid var(--border); border-left: 4px solid var(--accent);
+      font-size: 14px; font-weight: 700; color: var(--text); }
+    .map-bldg-header .map-bldg-label { flex: 1 1 auto; }
+    .map-bldg-header .map-bldg-count { font-size: 12px; font-weight: 700; opacity: 0.7; margin-right: 4px; }
+    .map-bldg-header .map-bldg-carat { font-size: 12px; opacity: 0.7; flex-shrink: 0; transition: transform .2s; }
+    .map-bldg-header.open .map-bldg-carat { transform: rotate(90deg); }
+    .map-bldg-body { margin-top: 8px; }
+    .map-type-tag { display: inline-block; margin-top: 4px; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; background: #efe7da; color: #6d3d31; }
+    body.dark .map-type-tag { background: #2a2420; color: #d6c9b8; }
+    /* v2.9.35: admin delete button on each map card */
+    .map-card-wrap { position: relative; }
+    .map-del-btn { position: absolute; top: 6px; right: 6px; z-index: 2;
+      background: #b91c1c; color: #fff; border: none; border-radius: 8px;
+      padding: 5px 10px; font-size: 12px; font-weight: 700; cursor: pointer;
+      font-family: inherit; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+      -webkit-tap-highlight-color: transparent; }
+    .map-del-btn:active { transform: scale(0.96); }
 
     /* v2.5: START HERE card — universal pattern for empty/new features */
     .start-here {
@@ -2893,22 +3360,29 @@ function dashboardPage(user) {
                   border-radius: 10px; font-size: 15px; line-height: 1.5;
                   color: var(--text); }
 
-    .ask-history { margin-bottom: 14px; }
-    .ask-qa { background: var(--card); border: 1px solid var(--border);
-              border-radius: 10px; padding: 12px; margin-bottom: 10px;
-              border-left: 4px solid var(--accent); }
-    #ask-history .ask-qa:nth-child(odd)  { background: var(--accent-light); }
-    #ask-history .ask-qa:nth-child(even) { background: var(--card); }
-    .ask-qa-q { font-size: 14px; font-weight: 600; color: var(--accent-text);
-                margin-bottom: 6px; }
-    .ask-qa-q-label { font-size: 11px; text-transform: uppercase;
-                      letter-spacing: 0.5px; color: var(--muted);
-                      font-weight: 700; margin-right: 6px; }
-    .ask-qa-a { font-size: 15px; line-height: 1.5; color: var(--text);
-                white-space: pre-wrap; }
-    .ask-qa-a-label { font-size: 11px; text-transform: uppercase;
-                      letter-spacing: 0.5px; color: var(--muted);
-                      font-weight: 700; margin-right: 6px; }
+    .ask-history { margin-bottom: 14px; display: flex; flex-direction: column; gap: 10px; }
+    /* v2.9.19: Chat-bubble UI matching website widget. Brown palette. */
+    .ask-msg { max-width: 88%; padding: 10px 14px; border-radius: 14px;
+               font-size: 15px; line-height: 1.55; word-wrap: break-word;
+               overflow-wrap: break-word; white-space: pre-line; }
+    .ask-msg.user { background: var(--accent); color: #ffffff;
+                    align-self: flex-end; border-bottom-right-radius: 4px; }
+    .ask-msg.bot  { background: var(--accent-light); color: var(--text);
+                    align-self: flex-start; border-bottom-left-radius: 4px; }
+    .ask-msg.bot a { color: var(--accent); text-decoration: underline; font-weight: 500; }
+    .ask-msg.bot a:hover { color: var(--muted); }
+    body.dark .ask-msg.bot a { color: #c9b39c; }
+    .ask-progress { align-self: flex-start; width: 60%; max-width: 200px; height: 3px;
+                    background: var(--border); border-radius: 2px; position: relative;
+                    overflow: hidden; }
+    .ask-progress::before { content: ''; position: absolute; top: 0; height: 100%;
+                            background: var(--accent); border-radius: 2px;
+                            animation: askProgress 1.4s ease-in-out infinite; }
+    @keyframes askProgress {
+      0%   { left: -30%; width: 30%; }
+      50%  { left: 35%;  width: 30%; }
+      100% { left: 100%; width: 30%; }
+    }
 
     /* Home action tiles */
     .home-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
@@ -2947,11 +3421,21 @@ function dashboardPage(user) {
     body.dark .codes-filter-pill { border-color: var(--accent); color: var(--accent); }
     body.dark .codes-filter-pill.active { background: var(--accent); color: #fff; }
     .home-section-title { display: flex; align-items: center; gap: 8px;
-                          font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px;
-                          color: var(--text); padding: 6px 10px; margin: 0 0 10px;
-                          border-left: 4px solid #999; border-radius: 0 4px 4px 0;
-                          background: #f3f4f6; }
+                          font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px;
+                          color: var(--text); padding: 9px 12px; margin: 22px 0 12px;
+                          border-left: 6px solid #999; border-radius: 0 4px 4px 0;
+                          background: #e7e9ee; }
+    .home-section-title:first-child { margin-top: 0; }
     body.dark .home-section-title { background: #1a2030; }
+    /* v2.9.31: Reference parent rows are tappable carat headers (accordion). */
+    .ref-parent { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    .ref-parent .ref-parent-label { flex: 1 1 auto; }
+    .ref-parent .ref-parent-count { font-size: 12px; font-weight: 700; opacity: 0.7;
+                                    text-transform: none; letter-spacing: 0; margin-right: 4px; }
+    .ref-parent .ref-parent-carat { font-size: 12px; opacity: 0.7; flex-shrink: 0;
+                                    transition: transform .2s; }
+    .ref-parent.open .ref-parent-carat { transform: rotate(90deg); }
+    .ref-children { margin-bottom: 4px; }
     .home-section-icon { font-size: 16px; line-height: 1; }
     .home-ref-list { display: flex; flex-direction: column; gap: 8px; }
     .home-ref-card { background: var(--card-bg,#fff); border: 1px solid var(--border,#e5e7eb);
@@ -2965,7 +3449,7 @@ function dashboardPage(user) {
     .home-ref-chevron { font-size: 12px; color: var(--accent); flex-shrink: 0; transition: transform .2s; }
     .home-ref-card.open .home-ref-chevron { transform: rotate(90deg); }
     .home-ref-body { font-size: 13px; color: var(--text); margin-top: 10px; line-height: 1.65;
-                     white-space: pre-wrap; border-top: 1px solid var(--border,#e5e7eb); padding-top: 10px; }
+                     white-space: normal; border-top: 1px solid var(--border,#e5e7eb); padding-top: 10px; }
     body.dark .home-ref-body { border-color: var(--border-dark,#374151); }
 
     /* CODES TAB */
@@ -2992,7 +3476,40 @@ function dashboardPage(user) {
     .code-detail { background: var(--card); border: 1px solid var(--border);
                    border-radius: 12px; padding: 16px; margin-bottom: 12px; display: none; }
     .code-detail.open { display: block; }
-    .code-detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .code-detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; cursor: pointer; }
+    .code-detail-chevron { font-size: 13px; color: var(--text); opacity: 0.6;
+                           margin-left: auto; flex-shrink: 0; transition: transform .2s;
+                           transform: rotate(90deg); }
+    .code-collapsed .code-detail-chevron { transform: rotate(0deg); }
+    /* v2.9.21: tappable contact pills inside code bodies */
+    .contact-pill { display: flex; flex-direction: column; justify-content: center;
+                    margin: 6px 0; padding: 10px 14px; border-radius: 12px;
+                    background: var(--accent-light); border: 1px solid var(--border);
+                    text-decoration: none; min-height: 48px; }
+    .contact-pill:active { filter: brightness(0.95); }
+    .contact-pill-name { font-weight: 700; color: var(--text); font-size: 15px; }
+    .contact-pill-phone { font-size: 14px; color: #6d3d31; font-weight: 600; margin-top: 2px; }
+    body.dark .contact-pill-phone { color: #d6c9b8; }
+    .contact-pill-lead { background: #aac27f; border-color: #8fa965; }
+    .contact-pill-lead .contact-pill-name { color: #1a1a1a; }
+    .contact-pill-lead .contact-pill-name::after { content: " ★"; color: #402020; }
+    .contact-pill-lead .contact-pill-phone { color: #2a3a14; }
+    /* v2.9.29: facilities packet — two box types. Phone box = soft blue (Send),
+       data box = warm cream. Tuned for low eye strain (muted fills, soft borders). */
+    .pkt-phone-box { display: flex; flex-direction: column; justify-content: center;
+                     margin: 7px 0; padding: 11px 14px; border-radius: 12px;
+                     background: #eaf4fb; border: 1px solid #c2dcee;
+                     text-decoration: none; min-height: 48px; }
+    .pkt-phone-box:active { filter: brightness(0.96); }
+    .pkt-phone-box .contact-pill-name { font-weight: 700; color: #2c3e50; font-size: 15px; }
+    .pkt-phone-box .contact-pill-phone { font-size: 14px; color: #2c6a93; font-weight: 700; margin-top: 2px; }
+    .pkt-data-box { margin: 7px 0; padding: 10px 14px; border-radius: 10px;
+                    background: #f7f2ea; border: 1px solid #e6dcce;
+                    font-size: 14px; line-height: 1.6; color: #5a4636; }
+    body.dark .pkt-phone-box { background: #1c2a36; border-color: #2c4456; }
+    body.dark .pkt-phone-box .contact-pill-name { color: #cfe3f2; }
+    body.dark .pkt-phone-box .contact-pill-phone { color: #8dc6e8; }
+    body.dark .pkt-data-box { background: #241e18; border-color: #3a3026; color: #d6c9b8; }
     .code-swatch { width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0; }
     .code-detail h3 { margin: 0; font-size: 18px; color: var(--text);
                        text-transform: uppercase; letter-spacing: 0.5px; }
@@ -3092,21 +3609,29 @@ function dashboardPage(user) {
     .role-box.text-dark { color: #1a1a1a; }
 
     /* v2.5: Content tile grid (inside a role) — same 6-second model as Codes */
-    .content-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-    .content-tile { padding: 16px 12px; border-radius: 12px; cursor: pointer;
+    .content-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .content-tile { padding: 10px 10px; border-radius: 14px; cursor: pointer;
                     background: var(--card); border: 1px solid var(--border);
                     color: var(--text); font-weight: 700;
                     box-shadow: 0 1px 3px rgba(0,0,0,0.05);
                     -webkit-tap-highlight-color: transparent;
-                    min-height: 80px;
+                    min-height: 52px;
                     display: flex; flex-direction: column; justify-content: center;
-                    text-align: center; gap: 4px; }
+                    text-align: center; gap: 3px; }
     .content-tile:active { transform: scale(0.97); }
-    .content-tile-icon { font-size: 22px; line-height: 1; margin-bottom: 4px; }
-    .content-tile-name { font-size: 14px; line-height: 1.3;
-                         text-transform: uppercase; letter-spacing: 0.3px; }
+    .content-tile-icon { font-size: 18px; line-height: 1; margin-bottom: 2px; }
+    .content-tile-name { font-size: 12px; line-height: 1.2;
+                         text-transform: none; letter-spacing: 0; word-break: break-word; }
+    .content-tile-phone { font-size: 12px; line-height: 1.2; font-weight: 700;
+                          color: var(--accent); text-decoration: none; margin-top: 2px; }
     .content-tile-emergency { background: var(--emergency-bg);
                               border-color: var(--red); color: var(--emergency-text); }
+    @media (max-width: 460px) {
+      .content-tiles { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+      .content-tile { padding: 8px 6px; min-height: 48px; border-radius: 12px; }
+      .content-tile-name { font-size: 11px; }
+      .content-tile-phone { font-size: 11px; }
+    }
     .back-inline { color: var(--accent); text-decoration: none; font-size: 14px;
                    font-weight: 700; display: inline-flex; align-items: center;
                    gap: 6px; padding: 10px 14px 10px 0;
@@ -3247,8 +3772,11 @@ function dashboardPage(user) {
       <div class="tab tab-codes" data-tab="codes" onclick="showTab('codes')" style="display:none">
         <span class="tab-icon">🛡️</span><span>Codes</span>
       </div>
+      <div class="tab tab-facilities" data-tab="facilities" onclick="showTab('facilities')" style="display:none">
+        <span class="tab-icon">🗺️</span><span>Maps</span>
+      </div>
       <div class="tab" data-tab="content" onclick="showTab('content')">
-        <span class="tab-icon">📋</span><span>Content</span>
+        <span class="tab-icon">📋</span><span>Reference</span>
       </div>
       <div class="tab tab-admin" data-tab="admin" onclick="showTab('admin')" style="display:none">
         <span class="tab-icon">🛠</span><span>Admin</span>
@@ -3299,7 +3827,7 @@ function dashboardPage(user) {
         </a>
         <a class="home-action" style="background:#aac27f" href="#" onclick="showTab('content');return false">
           <div class="home-action-icon">📋</div>
-          <div class="home-action-name">Content</div>
+          <div class="home-action-name">Reference</div>
         </a>
         <a class="home-action" style="background:#d97706" href="https://tab-supplies-worker.shanepass.workers.dev/" target="_blank" rel="noopener">
           <div class="home-action-icon">🛒</div>
@@ -3342,6 +3870,18 @@ function dashboardPage(user) {
     <div class="card">
       <div class="card-title">Recent Notes</div>
       <div id="notes-list"><div class="empty">Loading…</div></div>
+    </div>
+    <div class="card" style="border-left:4px solid #a0623a">
+      <div class="card-title">Request a Change</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:10px">
+        Spotted something wrong, missing, or out of date in TabReady — a phone number, a name, a map, a content card? Send it here. Shane gets notified and reviews every request.
+      </div>
+      <div class="notes-form">
+        <textarea id="cr-body" placeholder="Tell us what's wrong, missing, or out of date — a phone number, a name, a map, a content card. Be specific so it's quick to fix."></textarea>
+        <div style="margin-top:12px">
+          <button class="btn" id="cr-send" onclick="postChangeRequest()">Send Request</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -3465,12 +4005,15 @@ function dashboardPage(user) {
   <div class="tab-panel" id="tab-codes">
     <!-- v2.9.15: Home / Codes filter pills -->
     <div class="codes-filter-bar">
-      <button class="codes-filter-pill active" id="pill-home" onclick="setCodesView('home')">Home</button>
+      <button class="codes-filter-pill active" id="pill-home" onclick="setCodesView('home')">Reference</button>
       <button class="codes-filter-pill" id="pill-codes" onclick="setCodesView('codes')">Codes</button>
     </div>
 
     <!-- HOME VIEW: reference + ops content -->
     <div id="codes-view-home">
+      <div class="content-search-row">
+        <input type="text" id="ref-search" class="content-search-input" placeholder="🔍 Search reference (title or body)…" oninput="onRefSearchInput()">
+      </div>
       <div id="codes-home-content"><div class="empty">Loading…</div></div>
     </div>
 
@@ -3507,6 +4050,73 @@ function dashboardPage(user) {
     </div>
   </div>
 
+  <!-- v2.9.25: FACILITIES MAPS TAB -->
+  <div class="tab-panel" id="tab-facilities">
+    <div class="card" id="facilities-map-upload-card" style="display:none">
+      <div class="card-title">Upload a Map</div>
+      <p style="font-size:14px;color:var(--muted);margin:0 0 12px">
+        Admin only. Add campus maps, evacuation routes, or equipment diagrams. JPG, PNG, WEBP, or PDF up to 15 MB each. Pick the building and type once, then add one or several files at a time — each file&#39;s own name becomes the map name.
+      </p>
+      <div class="field" style="margin-bottom:10px">
+        <label class="lbl" style="display:block;font-size:13px;font-weight:700;color:var(--muted);margin-bottom:6px">Building</label>
+        <select id="map-upload-building" style="width:100%;padding:12px;font-size:16px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text)">
+          <option value="sanctuary">Sanctuary</option>
+          <option value="family-life-center">Family Life Center</option>
+          <option value="admin-offices">Admin Offices</option>
+          <option value="foundations-school">Foundations School</option>
+          <option value="youth-building">Youth Building</option>
+          <option value="general">General / Whole Campus</option>
+        </select>
+      </div>
+      <div class="field" style="margin-bottom:10px">
+        <label class="lbl" style="display:block;font-size:13px;font-weight:700;color:var(--muted);margin-bottom:6px">Type</label>
+        <select id="map-upload-type" style="width:100%;padding:12px;font-size:16px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text)">
+          <option value="evacuation">Evacuation</option>
+          <option value="fire">Fire</option>
+          <option value="first-aid-aed">First Aid / AED</option>
+          <option value="severe-weather">Severe Weather</option>
+          <option value="security-lockdown">Security / Lockdown</option>
+          <option value="utilities">Utilities</option>
+          <option value="general">General</option>
+        </select>
+      </div>
+      <div class="field" style="margin-bottom:10px">
+        <label class="lbl" style="display:block;font-size:13px;font-weight:700;color:var(--muted);margin-bottom:6px">Map name <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional — overrides filename, single upload only)</span></label>
+        <input type="text" id="map-upload-label" placeholder="e.g. Evacuation Route — main exits" style="width:100%;padding:12px;font-size:16px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text)">
+      </div>
+      <div class="field" style="margin-bottom:10px">
+        <label class="lbl" style="display:block;font-size:13px;font-weight:700;color:var(--muted);margin-bottom:6px">Who can see it</label>
+        <select id="map-upload-scope" style="width:100%;padding:12px;font-size:16px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text)">
+          <option value="broad">Everyone with map access</option>
+          <option value="safety">Safety team only</option>
+        </select>
+      </div>
+      <div class="field" style="margin-bottom:12px">
+        <label class="lbl" style="display:block;font-size:13px;font-weight:700;color:var(--muted);margin-bottom:6px">Map image</label>
+        <input type="file" id="map-upload-file" accept="image/*,application/pdf,.pdf" multiple style="width:100%;font-size:15px;color:var(--text)">
+      </div>
+      <button type="button" class="btn-primary" id="map-upload-btn" onclick="uploadFacilitiesMap()" style="width:100%">Upload Map</button>
+      <div id="map-upload-status" style="font-size:14px;margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Facilities Maps</div>
+      <p style="font-size:14px;color:var(--muted);margin:0 0 12px">
+        Campus maps, evacuation routes, and equipment locations. Tap any map to open it full size.
+      </p>
+      <div class="content-search-row">
+        <input type="text" id="maps-search" class="content-search-input" placeholder="🔍 Search maps by name…" oninput="onMapsSearchInput()">
+      </div>
+      <div id="facilities-maps-broad"><div class="empty">Loading…</div></div>
+    </div>
+    <div class="card" id="facilities-maps-safety-card" style="display:none">
+      <div class="card-title">Safety Team Only</div>
+      <p style="font-size:14px;color:var(--muted);margin:0 0 12px">
+        Restricted maps — seating and responder deployment.
+      </p>
+      <div id="facilities-maps-safety"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+
   <!-- CONTENT TAB — v2.5: role boxes → tile grid → detail -->
   <div class="tab-panel" id="tab-content">
     <!-- View 1: Role boxes -->
@@ -3516,6 +4126,10 @@ function dashboardPage(user) {
         <p style="font-size:14px;color:var(--muted);margin:0 0 12px">
           Tap a team to see their content. Only teams you belong to are shown.
         </p>
+        <div class="content-search-row">
+          <input type="text" id="content-global-search" class="content-search-input" placeholder="🔍 Search all packets (title or body)…" oninput="onGlobalContentSearchInput()">
+        </div>
+        <div id="content-global-results" style="display:none"></div>
         <div class="role-boxes" id="role-boxes">
           <div class="empty">Loading…</div>
         </div>
@@ -3528,7 +4142,7 @@ function dashboardPage(user) {
         <span class="back-inline-arrow">←</span> All teams
       </a>
       <div class="card">
-        <div class="card-title" id="content-tiles-title">Content</div>
+        <div class="card-title" id="content-tiles-title">Reference</div>
         <div class="content-search-row">
           <input type="text" id="content-search" class="content-search-input" placeholder="🔍 Search title or body…" oninput="onContentSearchInput()">
         </div>
@@ -3563,6 +4177,8 @@ const USER_CAN_SEE_REPORTS = ${canSeeReportsFlag};
 const USER_CAN_SEE_WATCHLIST = ${canSeeWatchListFlag};
 const USER_CAN_POST_WATCHLIST = ${canPostWatchListFlag};
 const USER_IS_GLOBAL_ADMIN = ${isGlobalAdminFlag};
+const USER_CAN_SEE_FACILITIES_MAP = ${canSeeFacilitiesMapFlag};
+const USER_CAN_SEE_FACILITIES_MAP_SAFETY = ${canSeeFacilitiesMapSafetyFlag};
 const ME_USER_ID = ${meUserIdJson};
 
 if (USER_CAN_SEE_CODES) {
@@ -3580,6 +4196,12 @@ if (USER_CAN_SEE_WATCHLIST) {
 if (USER_IS_GLOBAL_ADMIN) {
   document.querySelectorAll('.admin-link-audit').forEach(t => t.style.display = '');
   document.querySelectorAll('.tab-admin').forEach(t => t.style.display = '');
+  var mapUpCard = document.getElementById('facilities-map-upload-card');
+  if (mapUpCard) mapUpCard.style.display = '';
+}
+if (USER_CAN_SEE_FACILITIES_MAP || USER_CAN_SEE_FACILITIES_MAP_SAFETY) {
+  document.querySelectorAll('.tab-facilities').forEach(t => t.style.display = '');
+  document.querySelectorAll('.home-action-facilities').forEach(t => t.style.display = '');
 }
 // v2.8: show "Post Notification" card to safety/staff/elders/admin
 if (USER_CAN_BROADCAST) {
@@ -3678,6 +4300,7 @@ function showTab(name) {
   if (name === 'watchlist') loadWatchList();
   if (name === 'team') loadTeam();
   if (name === 'codes') renderCodesHomeView();
+  if (name === 'facilities') loadFacilitiesMaps();
   if (name === 'ask') {
     setTimeout(function() {
       var q = document.getElementById('ask-q');
@@ -3726,7 +4349,15 @@ function updateTabArrows() {
 
 async function loadMe() {
   try {
-    const res = await fetch('/api/me');
+    const res = await fetch('/api/me', { credentials: 'same-origin', cache: 'no-store' });
+    if (res.status === 401) {
+      // Session expired or cache served a stale logged-in shell.
+      // Don't hang on "Loading…" — send the user to a fresh login.
+      const el = document.getElementById('roles-list');
+      if (el) el.innerHTML = '<div class="empty"><a href="/login" style="color:#6d3d31;font-weight:700">Session expired — tap to sign in again</a></div>';
+      try { if (navigator.serviceWorker) { const regs = await navigator.serviceWorker.getRegistrations(); regs.forEach(r => r.unregister()); } } catch (e) {}
+      return;
+    }
     if (!res.ok) return;
     const me = await res.json();
     USER_ROLES = Array.isArray(me.roles) ? me.roles : [];
@@ -3748,6 +4379,7 @@ let CONTENT_FILTER = 'all';
 let CONTENT_ROLE = null;
 let CONTENT_DETAIL_ID = null;
 let CONTENT_SEARCH = ''; // v2.8: lowercase search term
+let CONTENT_FROM_GLOBAL = false; // v2.9.35: packet opened via global search
 let ALL_ROLES = [];
 let USER_ROLES = [];
 
@@ -3765,6 +4397,8 @@ const ROLE_STYLE = {
   living_nativity:{ color: '#2d8659', icon: '🎄',  textDark: false },
   special_events: { color: '#d97706', icon: '🎉',  textDark: false },
   team_leader:    { color: '#1e6fbf', icon: '🧭',  textDark: false },
+  facilities:     { color: '#a0623a', icon: '🔧',  textDark: false },
+  director:       { color: '#6d3d31', icon: '🗝️',  textDark: false },
   wed_adults:     { color: '#6d3d31', icon: '📖',  textDark: false },
   wed_children:   { color: '#aac27f', icon: '⚡',  textDark: false },
   wed_youth:      { color: '#7c3aed', icon: '🔥',  textDark: false }
@@ -3896,6 +4530,14 @@ function openRole(roleId, displayName) {
 function contentBackToRoles() {
   CONTENT_ROLE = null;
   CONTENT_DETAIL_ID = null;
+  CONTENT_FROM_GLOBAL = false;
+  // v2.9.35: clear global search so the team boxes show again.
+  var gs = document.getElementById('content-global-search');
+  if (gs) gs.value = '';
+  var gr = document.getElementById('content-global-results');
+  if (gr) { gr.style.display = 'none'; gr.innerHTML = ''; }
+  var rb = document.getElementById('role-boxes');
+  if (rb) rb.style.display = '';
   document.getElementById('content-view-tiles').style.display = 'none';
   document.getElementById('content-view-detail').style.display = 'none';
   document.getElementById('content-view-roles').style.display = 'block';
@@ -3905,11 +4547,46 @@ function contentBackToRoles() {
 function contentBackToTiles() {
   CONTENT_DETAIL_ID = null;
   document.getElementById('content-view-detail').style.display = 'none';
-  document.getElementById('content-view-tiles').style.display = 'block';
+  // v2.9.35: if this packet was opened from global search, go back to the
+  // roles view (where the search box and results still are), not the empty tiles.
+  if (CONTENT_FROM_GLOBAL) {
+    CONTENT_FROM_GLOBAL = false;
+    document.getElementById('content-view-roles').style.display = 'block';
+  } else {
+    document.getElementById('content-view-tiles').style.display = 'block';
+  }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // v2.5: render content as 6-second TILES (not long body cards)
+// v2.9.26: pull first phone number out of a content body for tap-to-call tiles.
+// NO REGEX (dashboardPage template rule). Scans for runs of digits.
+function extractPhone(body) {
+  if (!body) return null;
+  var s = String(body);
+  var digits = '';
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charAt(i);
+    if (ch >= '0' && ch <= '9') {
+      digits += ch;
+    } else if (ch === ' ' || ch === '-' || ch === '.' || ch === '(' || ch === ')' || ch === '+') {
+      continue;
+    } else {
+      var got = phoneFromDigits(digits);
+      if (got) return got;
+      digits = '';
+    }
+  }
+  return phoneFromDigits(digits);
+}
+
+function phoneFromDigits(d) {
+  if (d.length === 11 && d.charAt(0) === '1') d = d.substring(1);
+  if (d.length !== 10) return null;
+  var display = '(' + d.substring(0,3) + ') ' + d.substring(3,6) + '-' + d.substring(6);
+  return { tel: d, display: display };
+}
+
 function renderContentTiles() {
   const gridEl = document.getElementById('content-tile-grid');
   if (!CONTENT_ROLE) return;
@@ -3941,11 +4618,14 @@ function renderContentTiles() {
   gridEl.innerHTML =
     '<div class="content-tiles">' +
     filtered.map(it => {
-      const icon = iconForContent(it.title);
       const emergencyClass = it.is_emergency ? ' content-tile-emergency' : '';
+      const ph = extractPhone(it.body);
+      const phoneLine = ph
+        ? '<a class="content-tile-phone" href="tel:' + ph.tel + '" onclick="event.stopPropagation()">' + ph.display + '</a>'
+        : '';
       return '<div class="content-tile' + emergencyClass + '" onclick="openContent(' + JSON.stringify(it.id).replace(/"/g,'&quot;') + ')">' +
-        '<div class="content-tile-icon">' + icon + '</div>' +
         '<div class="content-tile-name">' + esc(it.title) + '</div>' +
+        phoneLine +
       '</div>';
     }).join('') +
     '</div>';
@@ -3956,6 +4636,46 @@ function onContentSearchInput() {
   var inp = document.getElementById('content-search');
   CONTENT_SEARCH = (inp ? inp.value : '').trim().toLowerCase();
   renderContentTiles();
+}
+
+// v2.9.35: global search across ALL packets in every team the user can see.
+// Lives on the role-boxes view. Empty box = show the team boxes as normal;
+// any text = hide team boxes and show flat matching results that open directly.
+function onGlobalContentSearchInput() {
+  var inp = document.getElementById('content-global-search');
+  var q = (inp ? inp.value : '').trim().toLowerCase();
+  var resultsEl = document.getElementById('content-global-results');
+  var boxesEl = document.getElementById('role-boxes');
+  if (!resultsEl || !boxesEl) return;
+  if (!q) {
+    resultsEl.style.display = 'none';
+    resultsEl.innerHTML = '';
+    boxesEl.style.display = '';
+    return;
+  }
+  boxesEl.style.display = 'none';
+  resultsEl.style.display = 'block';
+  var matches = (CONTENT_ALL || []).filter(function(it) {
+    var title = (it.title || '').toLowerCase();
+    var body = (it.body || '').toLowerCase();
+    return title.indexOf(q) !== -1 || body.indexOf(q) !== -1;
+  });
+  if (matches.length === 0) {
+    resultsEl.innerHTML = '<div class="empty">No packets match "' + esc(q) + '".</div>';
+    return;
+  }
+  resultsEl.innerHTML =
+    '<div style="font-size:13px;color:var(--muted);margin-bottom:8px">' +
+      matches.length + (matches.length === 1 ? ' match' : ' matches') + '</div>' +
+    '<div class="content-tiles">' +
+    matches.map(function(it) {
+      var emergencyClass = it.is_emergency ? ' content-tile-emergency' : '';
+      var tagLine = it.event_tag ? '<div style="font-size:12px;color:var(--muted);margin-top:2px">' + esc(it.event_tag) + '</div>' : '';
+      return '<div class="content-tile' + emergencyClass + '" onclick="openContent(' + JSON.stringify(it.id).replace(/"/g,'&quot;') + ')">' +
+        '<div class="content-tile-name">' + esc(it.title) + '</div>' + tagLine +
+      '</div>';
+    }).join('') +
+    '</div>';
 }
 
 function openContent(id) {
@@ -3972,18 +4692,282 @@ function openContent(id) {
   const html =
     '<h4 style="margin:0 0 8px;font-size:18px;text-transform:uppercase;letter-spacing:0.5px">' + esc(it.title) + '</h4>' +
     metaLine +
-    '<div style="font-size:15px;line-height:1.6;color:var(--text);white-space:pre-wrap">' + linkifyContent(it.body) + '</div>';
+    '<div style="font-size:15px;line-height:1.6;color:var(--text)">' + packetize(linkifyContent(it.body)) + '</div>';
   document.getElementById('content-detail-body').innerHTML = html;
   document.getElementById('content-view-tiles').style.display = 'none';
+  // v2.9.35: if opened from global search, the roles view is what's showing —
+  // hide it too, and remember so Back returns there.
+  var rolesView = document.getElementById('content-view-roles');
+  CONTENT_FROM_GLOBAL = (rolesView && rolesView.style.display !== 'none');
+  if (rolesView) rolesView.style.display = 'none';
   document.getElementById('content-view-detail').style.display = 'block';
   window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function loadFacilitiesMaps() {
+  var broadEl = document.getElementById('facilities-maps-broad');
+  var safetyEl = document.getElementById('facilities-maps-safety');
+  var safetyCard = document.getElementById('facilities-maps-safety-card');
+  try {
+    var res = await fetch('/api/facilities-maps', { credentials: 'same-origin', cache: 'no-store' });
+    if (!res.ok) {
+      if (broadEl) broadEl.innerHTML = '<div class="empty">Could not load maps.</div>';
+      return;
+    }
+    var data = await res.json();
+    var broad = data.broad || [];
+    var safety = data.safety || [];
+    // v2.9.35: cache for client-side search without re-fetching R2.
+    MAPS_BROAD = broad;
+    MAPS_SAFETY = safety;
+    renderMapsFiltered();
+    return;
+  } catch (e) {
+    if (broadEl) broadEl.innerHTML = '<div class="empty">Could not load maps.</div>';
+  }
+}
+
+// v2.9.35: cached map lists + name filter. Re-renders both grids from cache.
+var MAPS_BROAD = [];
+var MAPS_SAFETY = [];
+var MAPS_SEARCH = '';
+function onMapsSearchInput() {
+  var inp = document.getElementById('maps-search');
+  MAPS_SEARCH = (inp ? inp.value : '').trim().toLowerCase();
+  renderMapsFiltered();
+}
+function filterMaps(list) {
+  if (!MAPS_SEARCH) return list;
+  return list.filter(function(m) {
+    return (m.name || '').toLowerCase().indexOf(MAPS_SEARCH) !== -1;
+  });
+}
+function renderMapsFiltered() {
+  var broadEl = document.getElementById('facilities-maps-broad');
+  var safetyEl = document.getElementById('facilities-maps-safety');
+  var safetyCard = document.getElementById('facilities-maps-safety-card');
+  var broad = filterMaps(MAPS_BROAD);
+  var safety = filterMaps(MAPS_SAFETY);
+  if (broadEl) {
+    if (MAPS_BROAD.length === 0) {
+      broadEl.innerHTML = '<div class="empty">No maps uploaded yet.</div>';
+    } else if (broad.length === 0) {
+      broadEl.innerHTML = '<div class="empty">No maps match "' + esc(MAPS_SEARCH) + '".</div>';
+    } else {
+      broadEl.innerHTML = renderMapGrid(broad);
+    }
+  }
+  if (USER_CAN_SEE_FACILITIES_MAP_SAFETY && safetyCard) {
+    safetyCard.style.display = '';
+    if (safetyEl) {
+      if (MAPS_SAFETY.length === 0) {
+        safetyEl.innerHTML = '<div class="empty">No safety-only maps uploaded yet.</div>';
+      } else if (safety.length === 0) {
+        safetyEl.innerHTML = '<div class="empty">No safety maps match "' + esc(MAPS_SEARCH) + '".</div>';
+      } else {
+        safetyEl.innerHTML = renderMapGrid(safety);
+      }
+    }
+  }
+}
+
+// v2.9.29: admin map upload handler.
+async function uploadFacilitiesMap() {
+  var btn = document.getElementById('map-upload-btn');
+  var statusEl = document.getElementById('map-upload-status');
+  var fileEl = document.getElementById('map-upload-file');
+  var labelEl = document.getElementById('map-upload-label');
+  var scopeEl = document.getElementById('map-upload-scope');
+  if (!fileEl || !fileEl.files || fileEl.files.length === 0) {
+    if (statusEl) { statusEl.style.color = '#c0392b'; statusEl.textContent = 'Pick a file first.'; }
+    return;
+  }
+  var files = Array.prototype.slice.call(fileEl.files);
+  var scope = scopeEl ? scopeEl.value : 'broad';
+  var buildingEl = document.getElementById('map-upload-building');
+  var typeEl = document.getElementById('map-upload-type');
+  var building = buildingEl ? buildingEl.value : 'general';
+  var type = typeEl ? typeEl.value : 'general';
+  var total = files.length;
+  var multi = total > 1;
+  if (btn) { btn.disabled = true; btn.textContent = 'Uploading…'; }
+
+  var ok = 0;
+  var failures = [];
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i];
+    if (statusEl) {
+      statusEl.style.color = 'var(--muted)';
+      statusEl.textContent = 'Uploading ' + (i + 1) + ' of ' + total + '… (' + f.name + ')';
+    }
+    var fd = new FormData();
+    fd.append('map', f);
+    fd.append('scope', scope);
+    fd.append('building', building);
+    fd.append('type', type);
+    // Single file: label box wins if filled, else filename (server handles it).
+    // Multiple files: send empty label so the server uses each file's own name.
+    if (!multi) {
+      fd.append('label', labelEl ? labelEl.value : '');
+    } else {
+      fd.append('label', '');
+    }
+    try {
+      var res = await fetch('/api/facilities-maps/upload', {
+        method: 'POST', credentials: 'same-origin', body: fd
+      });
+      var data = await res.json();
+      if (res.ok && data.ok) {
+        ok++;
+      } else {
+        failures.push(f.name + ' (' + (data.error || res.status) + ')');
+      }
+    } catch (e) {
+      failures.push(f.name + ' (network)');
+    }
+  }
+
+  if (statusEl) {
+    if (failures.length === 0) {
+      statusEl.style.color = '#2d8659';
+      statusEl.textContent = ok === 1 ? 'Map uploaded.' : (ok + ' maps uploaded.');
+    } else if (ok > 0) {
+      statusEl.style.color = '#c0392b';
+      statusEl.textContent = ok + ' uploaded, ' + failures.length + ' failed: ' + failures.join('; ');
+    } else {
+      statusEl.style.color = '#c0392b';
+      statusEl.textContent = 'Upload failed: ' + failures.join('; ');
+    }
+  }
+  if (ok > 0) {
+    if (fileEl) fileEl.value = '';
+    if (labelEl) labelEl.value = '';
+    loadFacilitiesMaps();
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Upload Map'; }
+}
+
+// v2.9.34: group maps by building into collapsible carat sections (accordion),
+// each card showing a small type tag. Single flat grid kept inside each group.
+function mapBuildingLabel(slug) {
+  var m = {
+    'sanctuary': 'Sanctuary',
+    'family-life-center': 'Family Life Center',
+    'admin-offices': 'Admin Offices',
+    'foundations-school': 'Foundations School',
+    'youth-building': 'Youth Building',
+    'general': 'General / Whole Campus'
+  };
+  return m[slug] || (slug ? slug.replace(/-/g, ' ').replace(/\b\w/g, function(c){ return c.toUpperCase(); }) : 'General');
+}
+function mapTypeLabel(slug) {
+  var m = {
+    'evacuation': 'Evacuation',
+    'fire': 'Fire',
+    'first-aid-aed': 'First Aid / AED',
+    'severe-weather': 'Severe Weather',
+    'security-lockdown': 'Security / Lockdown',
+    'utilities': 'Utilities',
+    'general': 'General'
+  };
+  return m[slug] || (slug ? slug.replace(/-/g, ' ').replace(/\b\w/g, function(c){ return c.toUpperCase(); }) : 'General');
+}
+function renderMapGrid(items) {
+  // Group by building, preserving a fixed building order.
+  var order = ['sanctuary','family-life-center','admin-offices','foundations-school','youth-building','general'];
+  var groups = {};
+  for (var i = 0; i < items.length; i++) {
+    var b = items[i].building || 'general';
+    if (!groups[b]) groups[b] = [];
+    groups[b].push(items[i]);
+  }
+  // Any building slug not in the fixed order gets appended after.
+  var keys = order.filter(function(k){ return groups[k]; });
+  Object.keys(groups).forEach(function(k){ if (order.indexOf(k) === -1) keys.push(k); });
+
+  var html = '';
+  for (var g = 0; g < keys.length; g++) {
+    var bk = keys[g];
+    var list = groups[bk];
+    var secId = 'mapsec-' + bk;
+    html += '<div class="map-bldg">';
+    html += '<div class="map-bldg-header" data-mapsec="' + secId + '" onclick="toggleMapSection(&apos;' + secId + '&apos;)">';
+    html += '<span class="map-bldg-label">' + mapBuildingLabel(bk) + '</span>';
+    html += '<span class="map-bldg-count">(' + list.length + ')</span>';
+    html += '<span class="map-bldg-carat">&#9654;</span>';
+    html += '</div>';
+    html += '<div class="map-bldg-body" id="' + secId + '" style="display:none">';
+    html += '<div class="map-grid">';
+    for (var j = 0; j < list.length; j++) {
+      var it = list[j];
+      var safeName = (it.name || 'Map').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      var safeUrl = encodeURI(it.url || '');
+      var typeTag = mapTypeLabel(it.type || 'general');
+      var k = (it.key || it.url || '').toLowerCase();
+      var isPdf = k.length >= 4 && k.lastIndexOf('.pdf') === k.length - 4;
+      html += '<div class="map-card-wrap">';
+      html += '<a class="map-card" href="' + safeUrl + '" target="_blank" rel="noopener">';
+      if (isPdf) {
+        html += '<div class="map-thumb map-thumb-pdf"><span class="map-pdf-icon">📄</span><span class="map-pdf-tag">PDF</span></div>';
+      } else {
+        html += '<div class="map-thumb"><img src="' + safeUrl + '" alt="' + safeName + '" loading="lazy"></div>';
+      }
+      html += '<div class="map-name">' + safeName + '<br><span class="map-type-tag">' + typeTag + '</span></div>';
+      html += '</a>';
+      if (USER_IS_GLOBAL_ADMIN && it.key) {
+        var keyAttr = (it.key || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        html += '<button type="button" class="map-del-btn" title="Delete this map" ' +
+          'onclick="deleteFacilitiesMap(&quot;' + keyAttr + '&quot;,&quot;' + safeName.replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '&quot;)">Delete</button>';
+      }
+      html += '</div>';
+    }
+    html += '</div></div></div>';
+  }
+  return html;
+}
+// v2.9.34: accordion toggle for map building sections (matches Reference).
+function toggleMapSection(secId) {
+  var target = document.getElementById(secId);
+  var header = document.querySelector('.map-bldg-header[data-mapsec="' + secId + '"]');
+  if (!target || !header) return;
+  var opening = target.style.display === 'none';
+  document.querySelectorAll('.map-bldg-body').forEach(function(c) { c.style.display = 'none'; });
+  document.querySelectorAll('.map-bldg-header').forEach(function(h) { h.classList.remove('open'); });
+  if (opening) {
+    target.style.display = '';
+    header.classList.add('open');
+    header.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+// v2.9.35: admin-only delete of a facilities map (R2 object), then reload list.
+async function deleteFacilitiesMap(key, name) {
+  if (!key) return;
+  if (!confirm('Delete this map?\\n\\n"' + name + '"\\n\\nThis removes it permanently and cannot be undone.')) return;
+  try {
+    var res = await fetch('/api/facilities-maps/delete', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: key })
+    });
+    if (res.ok) {
+      loadFacilitiesMaps();
+    } else {
+      var data = {};
+      try { data = await res.json(); } catch (e) {}
+      alert('Could not delete map: ' + (data.error || res.status));
+    }
+  } catch (e) {
+    alert('Could not delete map. Check your connection and try again.');
+  }
 }
 
 async function loadContent() {
   try {
     const [rolesRes, contentRes] = await Promise.all([
-      fetch('/api/roles'),
-      fetch('/api/content')
+      fetch('/api/roles', { credentials: 'same-origin', cache: 'no-store' }),
+      fetch('/api/content', { credentials: 'same-origin', cache: 'no-store' })
     ]);
     if (rolesRes.ok) {
       const rdata = await rolesRes.json();
@@ -4001,7 +4985,7 @@ async function loadContent() {
 
 async function loadAlerts() {
   try {
-    const res = await fetch('/api/alerts');
+    const res = await fetch('/api/alerts', { credentials: 'same-origin', cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
     const items = data.items || [];
@@ -4317,6 +5301,31 @@ async function postNote() {
   }
 }
 
+async function postChangeRequest() {
+  const bodyEl = document.getElementById('cr-body');
+  const btn = document.getElementById('cr-send');
+  const body = bodyEl.value.trim();
+  if (!body) { bodyEl.focus(); return; }
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const res = await fetch('/api/change-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: body, request_type: 'edit' })
+    });
+    if (res.ok) {
+      bodyEl.value = '';
+      alert('Request sent. Shane has been notified and will review it. Thank you.');
+    } else {
+      alert('Could not send request. Try again.');
+    }
+  } catch (e) {
+    alert('Could not send request. Try again.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Send Request';
+  }
+}
+
 // v2.5: Watch List
 async function loadWatchList() {
   if (!USER_CAN_SEE_WATCHLIST) return;
@@ -4397,6 +5406,10 @@ async function deleteWatchListEntry(id) {
   }
 }
 
+// v2.9.19: Conversation history for Ask Tab. Mirrors website widget
+// behavior — keep last 6 turns, send to backend for multi-turn context.
+var ASK_HISTORY = [];
+
 async function sendAsk() {
   const qEl = document.getElementById('ask-q');
   const q = qEl.value.trim();
@@ -4404,32 +5417,122 @@ async function sendAsk() {
   const btn = document.getElementById('ask-send');
   const history = document.getElementById('ask-history');
   btn.disabled = true; btn.textContent = 'Thinking…';
+
+  // Append user bubble immediately
+  appendAskMsg('user', q);
+
+  // Add a progress bar bubble while we wait
+  var prog = document.createElement('div');
+  prog.className = 'ask-progress';
+  prog.id = 'ask-progress-bar';
+  history.appendChild(prog);
+  prog.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
   try {
     const res = await fetch('/api/ask', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: q })
+      body: JSON.stringify({ question: q, history: ASK_HISTORY.slice(-6) })
     });
     const data = await res.json();
+    if (prog.parentNode) prog.parentNode.removeChild(prog);
     const answer = data.answer || 'No answer.';
-    const qa = document.createElement('div');
-    qa.className = 'ask-qa';
-    qa.innerHTML =
-      '<div class="ask-qa-q"><span class="ask-qa-q-label">Q</span>' + esc(q) + '</div>' +
-      '<div class="ask-qa-a"><span class="ask-qa-a-label">A</span>' + esc(answer) + '</div>';
-    history.appendChild(qa);
+    appendAskMsg('bot', answer);
+    // Track history for multi-turn context (website widget does the same)
+    ASK_HISTORY.push({ role: 'user', content: q });
+    ASK_HISTORY.push({ role: 'assistant', content: answer });
     qEl.value = '';
     qEl.focus();
-    qa.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (e) {
-    const errBlock = document.createElement('div');
-    errBlock.className = 'ask-qa';
-    errBlock.innerHTML =
-      '<div class="ask-qa-q"><span class="ask-qa-q-label">Q</span>' + esc(q) + '</div>' +
-      '<div class="ask-qa-a"><span class="ask-qa-a-label">A</span>Something went wrong. Try again.</div>';
-    history.appendChild(errBlock);
+    if (prog.parentNode) prog.parentNode.removeChild(prog);
+    appendAskMsg('bot', 'Something went wrong. Please try again, or call the church office at (941) 355-8858.');
   } finally {
     btn.disabled = false; btn.textContent = 'Ask';
   }
+}
+
+function appendAskMsg(role, text) {
+  var history = document.getElementById('ask-history');
+  var d = document.createElement('div');
+  d.className = 'ask-msg ' + role;
+  if (role === 'bot') {
+    d.innerHTML = renderMessageHTML(text);
+  } else {
+    d.textContent = text;
+  }
+  history.appendChild(d);
+  if (role === 'user') {
+    setTimeout(function() { history.scrollTop = history.scrollHeight; }, 50);
+  } else {
+    setTimeout(function() { d.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
+  }
+}
+
+// v2.9.19: Ported from tab-website-ai embed widget renderMessageHTML.
+// Strips markdown (** __ * # backticks), converts [text](url) and bare
+// http(s) URLs to clickable links, preserves newlines via CSS white-space.
+// Uses new RegExp() with double-escaped string literals because this
+// function lives inside a backtick template literal in the worker source —
+// regex literals like /\s/ get mangled by the template parser.
+function renderMessageHTML(text) {
+  var s = String(text == null ? '' : text);
+
+  // Strip Q:/A: prefixes if the model ever emits them
+  s = s.replace(new RegExp('^\\\\s*(Q|Question):\\\\s*[^\\\\n]*\\\\n+', 'i'), '');
+  s = s.replace(new RegExp('^\\\\s*(A|Answer):\\\\s*', 'i'), '');
+
+  // Unwrap bold/italic wrapping a link: **[text](url)** -> [text](url)
+  s = s.replace(new RegExp('(\\\\*\\\\*|__)\\\\s*(\\\\[[^\\\\]]+\\\\]\\\\(https?://[^\\\\s)]+\\\\))\\\\s*(\\\\*\\\\*|__)', 'g'), '$2');
+  // Unwrap bare URL in bold/italic
+  s = s.replace(new RegExp('__\\\\s*(https?://[^\\\\s_]+)\\\\s*__', 'g'), '$1');
+  s = s.replace(new RegExp('\\\\*\\\\*\\\\s*(https?://[^\\\\s*]+)\\\\s*\\\\*\\\\*', 'g'), '$1');
+
+  // Remove ** and __ formatting
+  s = s.replace(new RegExp('\\\\*\\\\*', 'g'), '');
+  s = s.replace(new RegExp('__', 'g'), '');
+
+  // Single * italics: only when bordered by whitespace / punctuation
+  s = s.replace(new RegExp('(^|[\\\\s(])\\\\*([^*\\\\s][^*]*?)\\\\*(?=[\\\\s).,!?;:]|$)', 'g'), '$1$2');
+
+  // Strip leading # headers (line-starting)
+  s = s.replace(new RegExp('^#+\\\\s', 'gm'), '');
+
+  // Remove backticks (built via fromCharCode because a literal backtick
+  // in this source would terminate the outer template literal)
+  s = s.replace(new RegExp(String.fromCharCode(96), 'g'), '');
+
+  // HTML-escape
+  var escaped = s
+    .replace(new RegExp('&', 'g'), '&amp;')
+    .replace(new RegExp('<', 'g'), '&lt;')
+    .replace(new RegExp('>', 'g'), '&gt;')
+    .replace(new RegExp('"', 'g'), '&quot;');
+
+  // [text](url) -> clickable link
+  escaped = escaped.replace(
+    new RegExp('\\\\[([^\\\\]]+)\\\\]\\\\((https?://[^\\\\s)]+)\\\\)', 'g'),
+    function(_, txt, url) {
+      return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>';
+    }
+  );
+
+  // Bare YouTube URLs -> clickable
+  escaped = escaped.replace(
+    new RegExp('(^|[^"=>])(https://www\\\\.youtube\\\\.com/watch\\\\?v=[A-Za-z0-9_-]+)', 'g'),
+    function(_, prefix, url) {
+      return prefix + '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + '</a>';
+    }
+  );
+
+  // Any other bare http(s) URLs not already wrapped -> clickable
+  escaped = escaped.replace(
+    new RegExp('(^|[^"=>])(https?://[^\\\\s<]+)', 'g'),
+    function(_, prefix, url) {
+      // Skip if already inside a link (cheap check: previous chars contain href=")
+      return prefix + '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + '</a>';
+    }
+  );
+
+  return escaped;
 }
 
 // v2.9.7: My Team — D1-based per-role directories with per-team colors.
@@ -4669,9 +5772,20 @@ function setCodesView(view) {
 function renderCodesHomeView() {
   const el = document.getElementById('codes-home-content');
   if (!el) return;
-  const refItems = (CONTENT_ALL || []).filter(c => !c.is_emergency);
+  let refItems = (CONTENT_ALL || []).filter(c => !c.is_emergency);
+  // v2.9.35: reference search — filter to matches across title + body.
+  const rq = REF_SEARCH;
+  if (rq) {
+    refItems = refItems.filter(function(c) {
+      var title = (c.title || '').toLowerCase();
+      var body = (c.body || '').toLowerCase();
+      return title.indexOf(rq) !== -1 || body.indexOf(rq) !== -1;
+    });
+  }
   if (refItems.length === 0) {
-    el.innerHTML = '<div class="empty">No reference content available.</div>';
+    el.innerHTML = rq
+      ? '<div class="empty">No reference content matches "' + esc(rq) + '".</div>'
+      : '<div class="empty">No reference content available.</div>';
     return;
   }
   const byTag = {};
@@ -4681,27 +5795,68 @@ function renderCodesHomeView() {
     living_nativity_2026: { label: 'Living Nativity 2026', icon: '🎄',  color: '#2d8659' },
     wednesday:            { label: 'Wednesday',             icon: '📅',  color: '#7c3aed' },
     events:               { label: 'Events',                icon: '📣',  color: '#059669' },
+    people:               { label: 'People',                icon: '👤',  color: '#6d3d31' },
+    vendors:              { label: 'Vendors',               icon: '🛒',  color: '#ca8342' },
+    equipment:            { label: 'Equipment & Supplies',  icon: '📦',  color: '#aac27f' },
     General:              { label: 'General Reference',     icon: '📋',  color: '#3b82f6' },
   };
-  const tagOrder = ['sunday_morning','living_nativity_2026','wednesday','events','General'];
+  const tagOrder = ['sunday_morning','living_nativity_2026','wednesday','events','people','vendors','equipment','General'];
   const orderedTags = [...new Set([...tagOrder,...Object.keys(byTag)])].filter(t => byTag[t]);
-  el.innerHTML = orderedTags.map(tag => {
+  // v2.9.31: parent->child. Each category is a collapsed carat row (closed by
+  // default). Tap a category to reveal its cards; accordion closes the others.
+  // Each child card keeps the existing title-row -> packetize body behavior.
+  el.innerHTML = orderedTags.map((tag, idx) => {
     const items = byTag[tag]; if (!items) return '';
     const cfg = tagConfig[tag] || { label: tag, icon: '📄', color: '#6b7280' };
-    const header = '<div class="home-section-title" style="border-left-color:' + cfg.color + '">' +
-      '<span class="home-section-icon">' + cfg.icon + '</span>' + esc(cfg.label) + '</div>';
-    return '<div class="codes-section">' + header + '<div class="home-ref-list">' +
+    const secId = 'refsec-' + idx;
+    const header =
+      '<div class="home-section-title ref-parent' + (rq ? ' open' : '') + '" data-refsec="' + secId + '"' +
+        ' style="border-left-color:' + cfg.color + '"' +
+        ' onclick="toggleRefSection(&apos;' + secId + '&apos;)">' +
+        '<span class="home-section-icon">' + cfg.icon + '</span>' +
+        '<span class="ref-parent-label">' + esc(cfg.label) + '</span>' +
+        '<span class="ref-parent-count">(' + items.length + ')</span>' +
+        '<span class="ref-parent-carat">&#9654;</span>' +
+      '</div>';
+    const childList =
+      '<div class="home-ref-list ref-children" id="' + secId + '" style="display:' + (rq ? 'flex' : 'none') + '">' +
       items.map(c =>
         '<div class="home-ref-card" onclick="toggleRefCard(this)">' +
           '<div class="home-ref-title">' +
             '<span>' + esc(c.title) + '</span>' +
             '<span class="home-ref-chevron">&#9654;</span>' +
           '</div>' +
-          '<div class="home-ref-body" style="display:none">' + linkifyContent(c.body) + '</div>' +
+          '<div class="home-ref-body" style="display:none">' + packetize(linkifyContent(c.body)) + '</div>' +
         '</div>'
       ).join('') +
-      '</div></div>';
+      '</div>';
+    return '<div class="codes-section">' + header + childList + '</div>';
   }).join('');
+}
+
+// v2.9.35: reference search state + handler.
+var REF_SEARCH = '';
+function onRefSearchInput() {
+  var inp = document.getElementById('ref-search');
+  REF_SEARCH = (inp ? inp.value : '').trim().toLowerCase();
+  renderCodesHomeView();
+}
+
+// v2.9.31: accordion toggle for Reference category rows. Opening one category
+// closes the others so the list never grows past one open group.
+function toggleRefSection(secId) {
+  const target = document.getElementById(secId);
+  const header = document.querySelector('.ref-parent[data-refsec="' + secId + '"]');
+  if (!target || !header) return;
+  const opening = target.style.display === 'none';
+  // Close every section first (accordion).
+  document.querySelectorAll('.ref-children').forEach(function(c) { c.style.display = 'none'; });
+  document.querySelectorAll('.ref-parent').forEach(function(h) { h.classList.remove('open'); });
+  if (opening) {
+    target.style.display = 'flex';
+    header.classList.add('open');
+    header.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 function toggleRefCard(el) {
@@ -4767,14 +5922,27 @@ function showCode(id) {
   if (!code) return;
   const el = document.getElementById('code-detail');
   el.innerHTML =
-    '<div class="code-detail-head">' +
+    '<div class="code-detail-head" onclick="toggleCodeBody(this)">' +
       '<span class="code-swatch" style="background:' + esc(code.color) + '"></span>' +
       '<h3>' + esc(code.title) + '</h3>' +
+      '<span class="code-detail-chevron">&#9654;</span>' +
     '</div>' +
-    '<div class="code-detail-body">' + linkifyContent(code.body) + '</div>' +
+    '<div class="code-detail-body">' + pillifyContacts(linkifyContent(code.body)) + '</div>' +
     '<button class="code-detail-close" onclick="closeCode()">Close</button>';
   el.classList.add('open');
   document.getElementById('codes-detail-anchor').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+// v2.9.21: tap the code header to collapse the open code instantly (escape
+// hatch for a wrong tap) — no scrolling to the bottom Close button.
+function toggleCodeBody(headEl) {
+  const wrap = headEl.parentElement;
+  const body = wrap.querySelector('.code-detail-body');
+  const closeBtn = wrap.querySelector('.code-detail-close');
+  if (!body) return;
+  const collapsing = !wrap.classList.contains('code-collapsed');
+  wrap.classList.toggle('code-collapsed', collapsing);
+  body.style.display = collapsing ? 'none' : '';
+  if (closeBtn) closeBtn.style.display = collapsing ? 'none' : '';
 }
 function closeCode() { document.getElementById('code-detail').classList.remove('open'); }
 
@@ -4795,29 +5963,110 @@ function esc(s) {
 // Returns HTML string with <a href="tel:..."> and <a href="mailto:...">.
 function linkifyContent(s) {
   const safe = esc(s);
-  // Email first (so an email's local-part doesn't get caught by phone regex)
-  const withEmails = safe.replace(
-    /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/g,
+  // v2.9.23: regexes built with new RegExp + quadruple-backslash strings so the
+  // dashboardPage backtick template does not strip the escapes (the old regex
+  // literals here rendered as \d -> d and silently broke phone/email linking).
+  var emailRe = new RegExp('\\\\b[a-zA-Z0-9._%+\\\\-]+@[a-zA-Z0-9.\\\\-]+\\\\.[a-zA-Z]{2,}\\\\b', 'g');
+  var phoneRe = new RegExp('(\\\\(\\\\d{3}\\\\)\\\\s?\\\\d{3}[-.\\\\s]?\\\\d{4}|\\\\d{3}[-.]\\\\d{3}[-.]\\\\d{4})', 'g');
+  var nonDigitRe = new RegExp('\\\\D', 'g');
+  var headerRe = new RegExp('^([A-Z][A-Z0-9 /&()\\'.,\\\\-]{1,49})$', 'gm');
+  const withEmails = safe.replace(emailRe,
     m => '<a class="tab-link" href="mailto:' + m + '">' + m + '</a>'
   );
-  // Then phones
-  const withLinks = withEmails.replace(
-    /(\(\d{3}\)\s?\d{3}[-.\s]?\d{4}|\d{3}[-.]\d{3}[-.]\d{4})/g,
+  const withLinks = withEmails.replace(phoneRe,
     m => {
-      const digits = m.replace(/\D/g, '');
+      const digits = m.replace(nonDigitRe, '');
       return '<a class="tab-link" href="tel:+1' + digits + '">' + m + '</a>';
     }
   );
-  // v2.9.6: bold + darken ALL-CAPS section header lines.
-  // Match: a line that is mostly uppercase, 2-50 chars, optional punctuation.
-  // Examples that match: "DO THIS", "WHO HELPS", "ON THE RADIO",
-  //   "HEAT STROKE (EMERGENCY)", "NON-EMERGENCY POLICE"
-  // Won't match: lines with lowercase letters, plain prose, numbered steps.
-  const withHeaders = withLinks.replace(
-    /^([A-Z][A-Z0-9 /&()'.,\-]{1,49})$/gm,
+  const withHeaders = withLinks.replace(headerRe,
     '<span class="card-section-header">$1</span>'
   );
   return withHeaders;
+}
+
+// v2.9.21: turn "Name — (phone)" contact lines into tappable pill boxes.
+// Runs AFTER linkifyContent, so phone numbers are already <a href="tel:...">.
+// Matches lines like:
+//   Christine Follman — <a ... >(224) 623-4448</a>
+//   Lead: Eric Wyrosdic — <a ... >(941) 228-2656</a>
+// Leaves non-contact lines untouched. The whole pill is the tel link.
+function pillifyContacts(html) {
+  var NL = String.fromCharCode(10);
+  var telRe = new RegExp('<a class="tab-link" href="tel:(\\\\+1\\\\d{10})">([^<]+)<\\\\/a>');
+  var dashTrailRe = new RegExp('[\\\\s]*[\u2014\u2013-]\\\\s*$');
+  var leadRe = new RegExp('^(Lead)\\\\s*:\\\\s*(.+)$', 'i');
+  var afterRe = new RegExp('^[\\\\s.]+');
+  const lines = html.split(NL);
+  const out = lines.map(line => {
+    const telMatch = line.match(telRe);
+    if (!telMatch) return line;
+    const telHref = telMatch[1];
+    const phoneText = telMatch[2];
+    let before = line.slice(0, telMatch.index);
+    before = before.replace(dashTrailRe, '').trim();
+    let isLead = false;
+    let nameOnly = before;
+    const leadMatch = before.match(leadRe);
+    if (leadMatch) { isLead = true; nameOnly = leadMatch[2].trim(); }
+    if (!nameOnly) return line;
+    const after = line.slice(telMatch.index + telMatch[0].length).replace(afterRe, '').trim();
+    const leadClass = isLead ? ' contact-pill-lead' : '';
+    const pill =
+      '<a class="contact-pill' + leadClass + '" href="tel:' + telHref + '">' +
+        '<span class="contact-pill-name">' + nameOnly + '</span>' +
+        '<span class="contact-pill-phone">' + phoneText + '</span>' +
+      '</a>';
+    return pill + (after ? (NL + after) : '');
+  });
+  return out.join(NL);
+}
+
+// v2.9.29: facilities packet renderer. Runs AFTER linkifyContent.
+// Phone-first: any line containing a tel: link becomes a colored PHONE BOX.
+// Consecutive non-phone, non-empty lines are consolidated into one DATA BOX.
+// Headers (already wrapped by linkifyContent) and blank lines break the grouping.
+// No regex literals — built with new RegExp + escaped strings (template-safe).
+function packetize(html) {
+  var NL = String.fromCharCode(10);
+  var telLineRe = new RegExp('<a class="tab-link" href="tel:(\\\\+1\\\\d{10})">([^<]+)<\\\\/a>');
+  var headerRe = new RegExp('class="card-section-header"');
+  var dashTrailRe = new RegExp('[\\\\s]*[\\u2014\\u2013-]\\\\s*$');
+  var lines = html.split(NL);
+  var out = [];
+  var dataBuf = [];
+  function flushData() {
+    if (dataBuf.length) {
+      out.push('<div class="pkt-data-box">' + dataBuf.join('<br>') + '</div>');
+      dataBuf = [];
+    }
+  }
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var trimmed = line.trim();
+    if (trimmed === '') { flushData(); continue; }
+    if (headerRe.test(line)) { flushData(); out.push(line); continue; }
+    var telMatch = line.match(telLineRe);
+    if (telMatch) {
+      flushData();
+      var telHref = telMatch[1];
+      var phoneText = telMatch[2];
+      var before = line.slice(0, telMatch.index).replace(dashTrailRe, '').trim();
+      var after = line.slice(telMatch.index + telMatch[0].length).trim();
+      var nameOnly = before || 'Call';
+      out.push(
+        '<a class="pkt-phone-box" href="tel:' + telHref + '">' +
+          '<span class="contact-pill-name">' + nameOnly + '</span>' +
+          '<span class="contact-pill-phone">' + phoneText + '</span>' +
+        '</a>'
+      );
+      if (after) dataBuf.push(after);
+      continue;
+    }
+    dataBuf.push(trimmed);
+  }
+  flushData();
+  return out.join('');
 }
 
 loadMe();
@@ -4829,6 +6078,155 @@ loadSafetyDirectory();
 loadNotes();
 // v2.8.1: wire up tap-chip behavior for notification recipients
 initRecipientChips();
+
+// ═════════════════════════════════════════════════════════════
+// v2.9.24 PHASE 1: in-app notification alerts (toast + sound + vibrate)
+// No permissions needed. Works while the app is open. Works on silent
+// (vibrate). Does NOT alert a closed/backgrounded phone — that's Phase 2.
+// ═════════════════════════════════════════════════════════════
+var TR_seenAlertIds = null; // null = not yet seeded
+
+function trEnsureToastHost() {
+  var host = document.getElementById('tr-toast-host');
+  if (host) return host;
+  host = document.createElement('div');
+  host.id = 'tr-toast-host';
+  host.style.position = 'fixed';
+  host.style.top = '0';
+  host.style.left = '0';
+  host.style.right = '0';
+  host.style.zIndex = '99999';
+  host.style.display = 'flex';
+  host.style.flexDirection = 'column';
+  host.style.alignItems = 'center';
+  host.style.pointerEvents = 'none';
+  document.body.appendChild(host);
+  return host;
+}
+
+function trPlayAlertSound() {
+  try {
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    var ctx = new Ctx();
+    var now = ctx.currentTime;
+    var freqs = [660, 880];
+    for (var i = 0; i < freqs.length; i++) {
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freqs[i];
+      var start = now + i * 0.18;
+      var stop = start + 0.16;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.25, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, stop);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(stop + 0.02);
+    }
+    setTimeout(function() { try { ctx.close(); } catch (e) {} }, 700);
+  } catch (e) {}
+}
+
+function trVibrate() {
+  try {
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  } catch (e) {}
+}
+
+function trShowToast(category, note) {
+  var host = trEnsureToastHost();
+  var toast = document.createElement('div');
+  toast.style.pointerEvents = 'auto';
+  toast.style.maxWidth = '560px';
+  toast.style.width = 'calc(100% - 24px)';
+  toast.style.margin = '12px';
+  toast.style.background = '#6d3d31';
+  toast.style.color = '#f7f6f2';
+  toast.style.borderRadius = '14px';
+  toast.style.boxShadow = '0 8px 28px rgba(0,0,0,0.35)';
+  toast.style.padding = '14px 16px';
+  toast.style.borderLeft = '6px solid #aac27f';
+  toast.style.transform = 'translateY(-140%)';
+  toast.style.transition = 'transform 0.28s ease';
+  toast.style.cursor = 'pointer';
+
+  var label = document.createElement('div');
+  label.style.fontSize = '12px';
+  label.style.fontWeight = '700';
+  label.style.textTransform = 'uppercase';
+  label.style.letterSpacing = '0.5px';
+  label.style.opacity = '0.85';
+  label.style.marginBottom = '3px';
+  label.textContent = 'New notification';
+
+  var cat = document.createElement('div');
+  cat.style.fontSize = '17px';
+  cat.style.fontWeight = '700';
+  cat.style.marginBottom = note ? '4px' : '0';
+  cat.textContent = category || 'Notification';
+
+  toast.appendChild(label);
+  toast.appendChild(cat);
+
+  if (note) {
+    var body = document.createElement('div');
+    body.style.fontSize = '14px';
+    body.style.opacity = '0.95';
+    body.textContent = note;
+    toast.appendChild(body);
+  }
+
+  var dismiss = function() {
+    toast.style.transform = 'translateY(-140%)';
+    setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
+  };
+  toast.addEventListener('click', dismiss);
+
+  host.appendChild(toast);
+  void toast.offsetHeight;
+  toast.style.transform = 'translateY(0)';
+
+  setTimeout(dismiss, 8000);
+}
+
+async function watchForNewAlerts() {
+  try {
+    var res = await fetch('/api/alerts', { credentials: 'same-origin', cache: 'no-store' });
+    if (!res.ok) return;
+    var data = await res.json();
+    var items = data.items || [];
+
+    if (TR_seenAlertIds === null) {
+      TR_seenAlertIds = {};
+      for (var i = 0; i < items.length; i++) TR_seenAlertIds[items[i].id] = true;
+      return;
+    }
+
+    var fresh = [];
+    for (var j = 0; j < items.length; j++) {
+      if (!TR_seenAlertIds[items[j].id]) {
+        fresh.push(items[j]);
+        TR_seenAlertIds[items[j].id] = true;
+      }
+    }
+    if (fresh.length === 0) return;
+
+    trPlayAlertSound();
+    trVibrate();
+    for (var k = fresh.length - 1; k >= 0; k--) {
+      trShowToast(fresh[k].category, fresh[k].note);
+    }
+  } catch (e) {}
+}
+
+watchForNewAlerts();
+setInterval(function() {
+  watchForNewAlerts();
+  loadAlerts();
+}, 20000);
 
 // v2.9.2: Enter submits the Ask form (Shift+Enter for newline).
 (function wireAskEnter() {
@@ -4875,7 +6273,7 @@ function contentListPage(user, items) {
         const langTag = item.language ? `<span class="lang">${escapeHtml(item.language.toUpperCase())}</span>` : '';
         const sourceTag = item.source ? `<span class="src">${escapeHtml(item.source)}</span>` : '';
         const editLink = user.is_global_admin
-          ? `<a class="edit-link" href="/content/${escapeHtml(item.id)}/edit">Edit</a>` : '';
+          ? `<a class="edit-link" href="/content/${escapeHtml(item.id)}/edit" onclick="event.stopPropagation()">Edit</a>` : '';
         // v2.8: admin row actions — Tighten + Delete
         const adminActions = user.is_global_admin
           ? `<div class="admin-row-actions">
@@ -4885,15 +6283,15 @@ function contentListPage(user, items) {
           : '';
         return `
           <div class="item${isFlipchart ? ' item-flipchart' : ''}" data-content-id="${escapeHtml(item.id)}">
-            <div class="item-head">
+            <div class="item-head" onclick="toggleItemBody(this)">
               <h3>${escapeHtml(item.title)} ${emergency} ${flipchartTag}</h3>
-              ${editLink}
+              <span class="item-head-right">${editLink}<span class="item-chevron">&#9654;</span></span>
             </div>
             <div class="item-meta">
               <span class="tier">Tier ${item.tier}</span>
               ${langTag} ${sourceTag} ${tagSpans}
             </div>
-            <div class="item-body">${escapeHtml(item.body).replace(/\n/g, '<br>')}</div>
+            <div class="item-body" style="display:none">${escapeHtml(item.body).replace(/\n/g, '<br>')}</div>
             <div class="item-foot">v${item.version} · updated ${escapeHtml(item.updated_at)}</div>
             ${adminActions}
           </div>
@@ -4914,8 +6312,11 @@ function contentListPage(user, items) {
     .back { color: #2563eb; text-decoration: none; font-size: 16px; font-weight: 700; padding: 12px 0; display: inline-block; text-transform: uppercase; letter-spacing: 0.5px; }
     .primary-btn { background: #2563eb; color: white; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
     .item { background: white; padding: 20px; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.03); }
-    .item-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .item-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; cursor: pointer; }
     .item-head h3 { margin: 0; font-size: 17px; text-transform: uppercase; letter-spacing: 0.3px; }
+    .item-chevron { font-size: 12px; color: #2563eb; flex-shrink: 0; margin-left: 8px; transition: transform .2s; }
+    .item-head-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .item.open .item-chevron { transform: rotate(90deg); }
     .item-meta { margin-bottom: 12px; font-size: 13px; }
     .item-body { color: #333; line-height: 1.5; margin-bottom: 12px; }
     .item-foot { color: #999; font-size: 12px; }
@@ -5009,6 +6410,16 @@ function contentListPage(user, items) {
   </div>
 
   <script>
+    function toggleItemBody(headEl) {
+      var item = headEl.closest('.item');
+      if (!item) return;
+      var body = item.querySelector('.item-body');
+      if (!body) return;
+      var opening = body.style.display === 'none';
+      body.style.display = opening ? '' : 'none';
+      item.classList.toggle('open', opening);
+    }
+
     var TIGHTEN_CONTENT_ID = null;
     var TIGHTEN_SUGGESTION = '';
 
