@@ -12,6 +12,13 @@ on:
         required: false
         default: ''
 
+# Workers that must also be deployed to the church Cloudflare account.
+# The church account hosts Email Routing (tabsarasota.org), so any worker
+# that receives email must live there.
+env:
+  CHURCH_ACCOUNT_ID: ffd360b239936d51e85d9961fdaeb65a
+  CHURCH_WORKERS: tab-email-ingest
+
 jobs:
   detect:
     runs-on: ubuntu-latest
@@ -38,6 +45,7 @@ jobs:
           echo "Deploying: $WORKERS"
           echo "matrix=$WORKERS" >> $GITHUB_OUTPUT
 
+  # Deploy to personal Cloudflare account (CF_API_TOKEN / CF_ACCOUNT_ID)
   deploy:
     needs: detect
     if: needs.detect.outputs.matrix != '[]' && needs.detect.outputs.matrix != ''
@@ -63,7 +71,6 @@ jobs:
             exit 1
           fi
 
-          # Determine entry file
           if [ -f "$DIR/index.js" ]; then
             ENTRY="index.js"
           else
@@ -77,9 +84,6 @@ jobs:
 
           echo "🚀 Deploying $WORKER from $DIR/$ENTRY ..."
 
-          # Fetch current bindings so D1/R2/KV are preserved across deploys.
-          # Secret text bindings (API keys, etc.) are stored separately by
-          # Cloudflare and persist automatically — we exclude them here.
           BINDINGS_JSON=$(curl -s \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/$WORKER/bindings" \
             -H "Authorization: Bearer $CF_API_TOKEN")
@@ -103,6 +107,80 @@ jobs:
             echo "✅ $WORKER deployed successfully"
           else
             echo "❌ Deploy failed for $WORKER (HTTP $HTTP_CODE)"
+            echo "$BODY"
+            exit 1
+          fi
+
+  # Deploy church-account workers to the church Cloudflare account.
+  # Only runs for workers listed in CHURCH_WORKERS env var.
+  deploy-church:
+    needs: detect
+    if: needs.detect.outputs.matrix != '[]' && needs.detect.outputs.matrix != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        worker: ${{ fromJson(needs.detect.outputs.matrix) }}
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy ${{ matrix.worker }} (church account)
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN_CHURCH }}
+          CF_ACCOUNT_ID: ffd360b239936d51e85d9961fdaeb65a
+        run: |
+          WORKER="${{ matrix.worker }}"
+
+          # Only deploy workers that belong in the church account
+          if ! echo ",${{ env.CHURCH_WORKERS }}," | grep -q ",$WORKER,"; then
+            echo "⏭️  $WORKER not in church-account list — skipping"
+            exit 0
+          fi
+
+          DIR="workers/$WORKER"
+
+          if [ ! -d "$DIR" ]; then
+            echo "❌ Directory $DIR not found — skipping"
+            exit 1
+          fi
+
+          if [ -f "$DIR/index.js" ]; then
+            ENTRY="index.js"
+          else
+            ENTRY="worker.js"
+          fi
+
+          if [ ! -f "$DIR/$ENTRY" ]; then
+            echo "❌ No $ENTRY found in $DIR — skipping"
+            exit 1
+          fi
+
+          echo "🏛️  Deploying $WORKER to church account from $DIR/$ENTRY ..."
+
+          BINDINGS_JSON=$(curl -s \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/$WORKER/bindings" \
+            -H "Authorization: Bearer $CF_API_TOKEN")
+          BINDINGS=$(echo "$BINDINGS_JSON" | jq -c '[.result // [] | .[] | select(.type != "secret_text")]')
+          echo "Preserving bindings: $BINDINGS"
+
+          METADATA=$(printf '{"main_module":"%s","compatibility_date":"2024-09-23","bindings":%s}' "$ENTRY" "$BINDINGS")
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/$WORKER" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -F "metadata=$METADATA;type=application/json" \
+            -F "$ENTRY=@$DIR/$ENTRY;type=application/javascript+module")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP $HTTP_CODE"
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ $WORKER deployed to church account successfully"
+          else
+            echo "❌ Church deploy failed for $WORKER (HTTP $HTTP_CODE)"
             echo "$BODY"
             exit 1
           fi

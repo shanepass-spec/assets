@@ -1,4 +1,4 @@
-// tab-email-ingest.js v1.2
+// tab-email-ingest.js v1.2 — deployed to church account
 // v1.2 changes from v1.1:
 //   - Cross-account D1 support: if env.DB binding is not present, the worker
 //     uses Cloudflare's HTTP API (env.CF_API_TOKEN + CF_ACCOUNT_ID + D1_DATABASE_ID).
