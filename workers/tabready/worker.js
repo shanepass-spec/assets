@@ -1,4 +1,9 @@
-const VERSION = '2.9.35b';
+const VERSION = '2.9.36';
+// v2.9.36 — Unified global search on Home tab. Searches every surface the
+//   signed-in user can see (reference, codes, watch list, reports, notes,
+//   directory, facilities maps). Permission-aware by construction — pulls
+//   only from endpoints the user can already reach. No new routes, no schema
+//   change, no permission change.
 // v2.9.35 — Three additions, no schema/D1 change, no server data model change:
 //   (1) MAP DELETE: admin-only Delete button on each facilities-map card +
 //       /api/facilities-maps/delete (R2 .delete by key, gated to map folders).
@@ -3692,6 +3697,19 @@ function dashboardPage(user) {
                             border: 1px solid var(--border); border-radius: 10px;
                             background: var(--card); color: var(--text);
                             font-family: inherit; box-sizing: border-box; }
+    .gs-group-label { font-size:12px; font-weight:800; text-transform:uppercase;
+      letter-spacing:0.6px; color:var(--muted); margin:14px 0 6px; }
+    .gs-result { display:flex; align-items:center; gap:10px; padding:12px 14px;
+      background:var(--card); border:1px solid var(--border); border-radius:10px;
+      margin-bottom:8px; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+    .gs-result:active { transform:scale(0.99); }
+    .gs-result-main { flex:1 1 auto; min-width:0; }
+    .gs-result-title { font-size:15px; font-weight:700; color:var(--text); }
+    .gs-result-sub { font-size:13px; color:var(--muted); margin-top:2px;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .gs-phone { flex:0 0 auto; background:var(--accent); color:#fff;
+      padding:8px 14px; border-radius:8px; font-size:13px; font-weight:700;
+      text-decoration:none; text-transform:uppercase; letter-spacing:0.4px; }
 
     /* v2.8: Tighten modal */
     .v28-modal { display: none; position: fixed; inset: 0;
@@ -3788,6 +3806,12 @@ function dashboardPage(user) {
 
   <!-- HOME TAB -->
   <div class="tab-panel active" id="tab-home">
+    <div class="card">
+      <input type="text" id="global-search" class="content-search-input"
+        placeholder="🔍 Search everything you can see…" oninput="onGlobalSearchInput()"
+        autocomplete="off">
+      <div id="global-search-results" style="display:none;margin-top:12px"></div>
+    </div>
     <a class="capture-btn" href="/capture">
       <span class="capture-btn-plus">＋</span>
       <span>Capture — Incident or Person</span>
@@ -4300,6 +4324,7 @@ function showTab(name) {
   if (name === 'watchlist') loadWatchList();
   if (name === 'team') loadTeam();
   if (name === 'codes') renderCodesHomeView();
+  if (name === 'home') invalidateSearchCache();
   if (name === 'facilities') loadFacilitiesMaps();
   if (name === 'ask') {
     setTimeout(function() {
@@ -6068,6 +6093,171 @@ function packetize(html) {
   flushData();
   return out.join('');
 }
+
+// ── v2.9.36 unified global search ──────────────────────────────────────
+var GS_TIMER = null;
+var GS_CACHE = { watchlist: [], reports: [], notes: [], directory: [], maps: [], loaded: false };
+var GS_ACTIONS = [];
+
+function invalidateSearchCache() { GS_CACHE.loaded = false; }
+
+function onGlobalSearchInput() {
+  if (GS_TIMER) clearTimeout(GS_TIMER);
+  GS_TIMER = setTimeout(runGlobalSearch, 220);
+}
+
+async function ensureSearchData() {
+  if (GS_CACHE.loaded) return;
+  var tasks = [];
+  if (USER_CAN_SEE_WATCHLIST) {
+    tasks.push(fetch('/api/watch-list', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function(r) { return r.ok ? r.json() : { items: [] }; })
+      .then(function(d) { GS_CACHE.watchlist = d.items || []; })
+      .catch(function() { GS_CACHE.watchlist = []; }));
+  } else { GS_CACHE.watchlist = []; }
+  if (USER_CAN_SEE_REPORTS) {
+    tasks.push(fetch('/api/reports', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function(r) { return r.ok ? r.json() : { items: [] }; })
+      .then(function(d) { GS_CACHE.reports = d.items || []; })
+      .catch(function() { GS_CACHE.reports = []; }));
+  } else { GS_CACHE.reports = []; }
+  tasks.push(fetch('/api/notes', { credentials: 'same-origin', cache: 'no-store' })
+    .then(function(r) { return r.ok ? r.json() : { items: [] }; })
+    .then(function(d) { GS_CACHE.notes = d.items || []; })
+    .catch(function() { GS_CACHE.notes = []; }));
+  if (USER_CAN_SEE_FACILITIES_MAP || USER_CAN_SEE_FACILITIES_MAP_SAFETY) {
+    tasks.push(fetch('/api/facilities-maps', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function(r) { return r.ok ? r.json() : { broad: [], safety: [] }; })
+      .then(function(d) { GS_CACHE.maps = (d.broad || []).concat(d.safety || []); })
+      .catch(function() { GS_CACHE.maps = []; }));
+  } else { GS_CACHE.maps = []; }
+  var dirRoles = Object.keys(ROLE_STYLE);
+  if (!USER_IS_GLOBAL_ADMIN) {
+    dirRoles = dirRoles.filter(function(r) { return USER_ROLES.indexOf(r) !== -1; });
+  }
+  GS_CACHE.directory = [];
+  dirRoles.forEach(function(roleId) {
+    tasks.push(fetch('/api/team-directory?role=' + encodeURIComponent(roleId), { credentials: 'same-origin', cache: 'no-store' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(d) {
+        if (!d || !d.members) return;
+        var roleName = (d.role && d.role.display_name) || roleId;
+        d.members.forEach(function(m) {
+          GS_CACHE.directory.push({ name: m.display_name || '', phone: m.phone || '', roleName: roleName });
+        });
+      })
+      .catch(function() {}));
+  });
+  await Promise.all(tasks);
+  GS_CACHE.loaded = true;
+}
+
+async function runGlobalSearch() {
+  var inp = document.getElementById('global-search');
+  var resultsEl = document.getElementById('global-search-results');
+  if (!inp || !resultsEl) return;
+  var q = (inp.value || '').trim().toLowerCase();
+  if (!q) { resultsEl.style.display = 'none'; resultsEl.innerHTML = ''; return; }
+  resultsEl.style.display = 'block';
+  resultsEl.innerHTML = '<div class="empty">Searching…</div>';
+  await ensureSearchData();
+  var hits = [];
+  (CONTENT_ALL || []).forEach(function(c) {
+    var t = (c.title || '').toLowerCase();
+    var b = (c.body || '').toLowerCase();
+    if (t.indexOf(q) !== -1 || b.indexOf(q) !== -1) {
+      hits.push({ type: 'Reference', title: c.title, sub: (c.event_tag || ''),
+        action: function() { showTab('content'); setTimeout(function() { openContent(c.id); }, 140); } });
+    }
+  });
+  if (USER_CAN_SEE_CODES) {
+    (CODES_DATA || []).forEach(function(c) {
+      var t = (c.title || '').toLowerCase();
+      var b = (c.body || '').toLowerCase();
+      if (t.indexOf(q) !== -1 || b.indexOf(q) !== -1) {
+        hits.push({ type: 'Code', title: c.title, sub: 'Safety flip chart',
+          action: function() { showTab('codes'); setTimeout(function() { setCodesView('codes'); setTimeout(function() { showCode(c.id); }, 140); }, 80); } });
+      }
+    });
+  }
+  (GS_CACHE.watchlist || []).forEach(function(w) {
+    var n = (w.display_name || '').toLowerCase();
+    var r = (w.reason || '').toLowerCase();
+    var bs = (w.basis || '').toLowerCase();
+    if (n.indexOf(q) !== -1 || r.indexOf(q) !== -1 || bs.indexOf(q) !== -1) {
+      hits.push({ type: 'Watch List', title: w.display_name || '(no name)', sub: (w.reason || '').slice(0, 80),
+        action: function() { showTab('watchlist'); } });
+    }
+  });
+  (GS_CACHE.reports || []).forEach(function(rep) {
+    var loc = (rep.location || '').toLowerCase();
+    var sum = (rep.summary || '').toLowerCase();
+    if (loc.indexOf(q) !== -1 || sum.indexOf(q) !== -1) {
+      hits.push({ type: 'Report', title: (rep.location || 'Incident'), sub: (rep.summary || '').slice(0, 80),
+        action: function() { showTab('reports'); } });
+    }
+  });
+  (GS_CACHE.notes || []).forEach(function(nt) {
+    var nb = (nt.body || '').toLowerCase();
+    var an = (nt.author_name || '').toLowerCase();
+    if (nb.indexOf(q) !== -1 || an.indexOf(q) !== -1) {
+      hits.push({ type: 'Note', title: (nt.author_name || 'Note'), sub: (nt.body || '').slice(0, 80),
+        action: function() { showTab('notes'); } });
+    }
+  });
+  (GS_CACHE.directory || []).forEach(function(p) {
+    var pn = (p.name || '').toLowerCase();
+    var pp = (p.phone || '').toLowerCase();
+    if (pn.indexOf(q) !== -1 || pp.indexOf(q) !== -1) {
+      var sub = p.roleName + (p.phone ? ' · ' + p.phone : '');
+      hits.push({ type: 'Person', title: p.name, sub: sub, phone: p.phone,
+        action: function() { showTab('team'); } });
+    }
+  });
+  (GS_CACHE.maps || []).forEach(function(mp) {
+    var mn = (mp.name || '').toLowerCase();
+    if (mn.indexOf(q) !== -1) {
+      hits.push({ type: 'Map', title: mp.name, sub: 'Facilities map', url: mp.url,
+        action: function() { showTab('facilities'); } });
+    }
+  });
+  if (hits.length === 0) {
+    resultsEl.innerHTML = '<div class="empty">Nothing matches “' + esc(q) + '” in what you can see.</div>';
+    return;
+  }
+  var typeOrder = ['Person', 'Watch List', 'Report', 'Code', 'Reference', 'Note', 'Map'];
+  var byType = {};
+  hits.forEach(function(h) { if (!byType[h.type]) byType[h.type] = []; byType[h.type].push(h); });
+  var orderedTypes = typeOrder.filter(function(t) { return byType[t]; });
+  var html = '<div style="font-size:13px;color:var(--muted);margin-bottom:10px">' +
+    hits.length + (hits.length === 1 ? ' result' : ' results') + '</div>';
+  GS_ACTIONS = [];
+  orderedTypes.forEach(function(type) {
+    html += '<div class="gs-group-label">' + esc(type) + '</div>';
+    byType[type].forEach(function(h) {
+      var idx = GS_ACTIONS.length;
+      GS_ACTIONS.push(h.action);
+      var phoneBtn = '';
+      if (h.phone) {
+        var digits = h.phone.replace(new RegExp(String.fromCharCode(92) + 'D', 'g'), '');
+        phoneBtn = '<a class="gs-phone" href="tel:+1' + digits + '" onclick="event.stopPropagation()">Call</a>';
+      }
+      html += '<div class="gs-result" onclick="gsGo(' + idx + ')">' +
+        '<div class="gs-result-main">' +
+          '<div class="gs-result-title">' + esc(h.title) + '</div>' +
+          (h.sub ? '<div class="gs-result-sub">' + esc(h.sub) + '</div>' : '') +
+        '</div>' + phoneBtn +
+      '</div>';
+    });
+  });
+  resultsEl.innerHTML = html;
+}
+
+function gsGo(idx) {
+  var fn = GS_ACTIONS[idx];
+  if (typeof fn === 'function') fn();
+}
+// ── end v2.9.36 ────────────────────────────────────────────────────────
 
 loadMe();
 loadContent();
