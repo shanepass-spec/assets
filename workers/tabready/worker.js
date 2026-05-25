@@ -1,4 +1,27 @@
-const VERSION = '2.9.36';
+const VERSION = '2.9.41';
+// v2.9.41 — Three surgical layout fixes: (1) Codes tab: removed Reference
+//   pill/sub-view — Codes is now purely the emergency safety flip chart;
+//   Reference content lives in its own Reference tab. (2) Maps tab: Upload
+//   form moved below the map list (content first, admin tools last). Both
+//   changes are pure markup/JS cleanup — no schema, route, or data change.
+// v2.9.40 — Nav + Home reordered to subject-first, grouped, alphabetical.
+//   Nav: everyday tools (Home, Ask, My Team, Notes, Notifications, Reference,
+//   Schedule) → role-gated safety (Codes, Maps, Reports, Watch List) → Admin.
+//   Home Quick Actions same grouping. PURE MARKUP REORDER ONLY — no logic,
+//   schema, route, permission, class, onclick, or color change. All data-tab
+//   names, .tab-* / .home-action-* classes, and display:none role gating
+//   preserved exactly. showTab/loadMe/role-visibility untouched.
+// v2.9.38 — FIX: "stuck on Loading…" after every deploy. Root cause was the
+//   first startup fetch (/api/me) occasionally being intercepted by the OLD
+//   service worker mid-swap, so loadMe()'s await never resolved and "YOUR
+//   ROLES" sat on "Loading…" forever while everything else loaded. Two
+//   surgical client-side fixes, no schema/route/permission change:
+//   (1) loadMe() now has a 6s timeout + one automatic retry (AbortController),
+//       so a stalled first fetch self-heals instead of hanging the panel.
+//   (2) Service worker now self-destructs cleanly: on 'activate' it claims
+//       clients AND any controlled page that detects a NEW version reloads
+//       itself ONCE (guarded by sessionStorage so it can't loop). This makes
+//       updates take effect on the next open without a manual force-close.
 // v2.9.36 — Unified global search on Home tab. Searches every surface the
 //   signed-in user can see (reference, codes, watch list, reports, notes,
 //   directory, facilities maps). Permission-aware by construction — pulls
@@ -331,6 +354,8 @@ export default {
       if (path === '/api/facilities-maps/upload' && method === 'POST') return await apiFacilitiesMapUpload(request, env);
       // ── v2.9.35: FACILITIES MAP DELETE (admin only) ──
       if (path === '/api/facilities-maps/delete' && method === 'POST') return await apiFacilitiesMapDelete(request, env);
+      // ── v2.9.37: SCHEDULE (read-only) ──
+      if (path === '/api/schedule' && method === 'GET') return await apiScheduleList(request, env);
 
       // ── CAPTURE PAGES ──
       if (path === '/capture' && method === 'GET') return await handleCaptureMenu(request, env);
@@ -389,10 +414,30 @@ function handleManifest() {
 }
 
 function handleServiceWorker() {
+  // v2.9.39: SELF-UNREGISTERING service worker.
+  // Root cause of the "0 bytes on every device" bug: the old fetch handler
+  //   (self.addEventListener('fetch', e => e.respondWith(fetch(e.request))))
+  //   intercepted EVERY request and re-fetched it. Server logs confirmed the
+  //   worker returned pages successfully (0 errors), but this pass-through SW
+  //   was returning empty/0-byte responses to the browser before the page
+  //   could render. The app does not need a fetch-intercepting SW to function.
+  // Fix: ship a SW that intercepts NOTHING, unregisters itself, and clears its
+  //   caches. Any browser still carrying the bad SW will pick this up, remove
+  //   it, and reload once into a clean, working page.
   const sw = `
 self.addEventListener('install', (event) => { self.skipWaiting(); });
-self.addEventListener('activate', (event) => { event.waitUntil(self.clients.claim()); });
-self.addEventListener('fetch', (event) => { event.respondWith(fetch(event.request)); });
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    try {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    } catch (e) {}
+    await self.registration.unregister();
+  })());
+});
+// No fetch handler and no page reload: the SW quietly removes itself. The page
+// (v2.9.39) no longer registers it, so this only cleans up browsers that still
+// carry an old registration.
 `;
   return new Response(sw, {
     headers: { 'Content-Type': 'application/javascript', 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' }
@@ -1945,6 +1990,80 @@ function prettyMapName(key) {
   return { name: display, building: building, type: type };
 }
 
+// ═════════════════════════════════════════════════════════════
+// v2.9.37 — SCHEDULE (Stage 2: read-only)
+// Returns assignments + blackouts for a given month, plus the
+// nearest future date that has assignments (for default-day open).
+// All authenticated users may read. Visibility filtering by team
+// happens client-side (own team pinned); double-booking stays
+// visible across teams by design.
+// ═════════════════════════════════════════════════════════════
+async function apiScheduleList(request, env) {
+  const user = await getUserFromRequest(request, env);
+  if (!user) return json({ error: 'not_authenticated' }, 401);
+
+  try {
+    const url = new URL(request.url);
+    // month param expected as YYYY-MM; default to current month (server time)
+    let month = (url.searchParams.get('month') || '').trim();
+    if (!isValidMonth(month)) {
+      const now = new Date();
+      month = now.getUTCFullYear() + '-' + String(now.getUTCMonth() + 1).padStart(2, '0');
+    }
+    const monthStart = month + '-01';
+    // last day boundary: first of next month
+    const [yy, mm] = month.split('-').map(Number);
+    const nextMonth = (mm === 12)
+      ? (yy + 1) + '-01-01'
+      : yy + '-' + String(mm + 1).padStart(2, '0') + '-01';
+
+    // Assignments within the requested month
+    const aRes = await env.DB.prepare(
+      `SELECT id, event_date, role, user_id, display_name, time_block, position, source
+       FROM schedule_assignments
+       WHERE deleted_at IS NULL AND event_date >= ? AND event_date < ?
+       ORDER BY event_date ASC, role ASC, display_name ASC`
+    ).bind(monthStart, nextMonth).all();
+    const assignments = aRes.results || [];
+
+    // Blackouts overlapping the requested month (start <= monthEnd AND end >= monthStart)
+    const bRes = await env.DB.prepare(
+      `SELECT id, user_id, display_name, start_date, end_date, note
+       FROM schedule_blackouts
+       WHERE deleted_at IS NULL AND start_date < ? AND end_date >= ?
+       ORDER BY start_date ASC`
+    ).bind(nextMonth, monthStart).all();
+    const blackouts = bRes.results || [];
+
+    // Nearest future date (>= today) that has at least one assignment
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const nRes = await env.DB.prepare(
+      `SELECT MIN(event_date) AS d
+       FROM schedule_assignments
+       WHERE deleted_at IS NULL AND event_date >= ?`
+    ).bind(todayStr).all();
+    const nextDay = (nRes.results && nRes.results[0] && nRes.results[0].d) || null;
+
+    return json({ month, assignments, blackouts, next_day: nextDay });
+  } catch (err) {
+    console.error('Schedule list failed:', err);
+    return json({ month: null, assignments: [], blackouts: [], next_day: null, note: 'table_not_yet_created' });
+  }
+}
+
+// YYYY-MM validator — pure char checks, no regex anywhere.
+function isValidMonth(s) {
+  if (typeof s !== 'string' || s.length !== 7) return false;
+  if (s.charAt(4) !== '-') return false;
+  for (let i = 0; i < 7; i++) {
+    if (i === 4) continue;
+    const c = s.charCodeAt(i);
+    if (c < 48 || c > 57) return false; // 0-9
+  }
+  const mn = Number(s.slice(5, 7));
+  return mn >= 1 && mn <= 12;
+}
+
 async function apiFacilitiesMaps(request, env) {
   const user = await getUserFromRequest(request, env);
   if (!user) return json({ error: 'not_authenticated' }, 401);
@@ -3229,6 +3348,29 @@ function dashboardPage(user) {
                         background: linear-gradient(to left, var(--card) 40%, rgba(255,255,255,0) 100%); }
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
+    .sched-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+    .sched-month-label { font-size:18px; font-weight:800; color:var(--text); }
+    .sched-nav-btn { background:var(--reach,#aac27f); color:#1a1a1a; border:none; border-radius:8px; width:40px; height:40px; font-size:22px; line-height:1; cursor:pointer; }
+    .sched-dow { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-bottom:4px; }
+    .sched-dow span { text-align:center; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+    .sched-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+    .sched-cell { aspect-ratio:1/1; border:1px solid var(--border); border-radius:8px; padding:4px; display:flex; flex-direction:column; align-items:flex-start; background:var(--card); cursor:pointer; min-height:0; position:relative; }
+    .sched-cell.empty-cell { background:transparent; border:none; cursor:default; }
+    .sched-cell.today { outline:2px solid var(--equip,#ca8342); }
+    .sched-cell.selected { background:var(--reach,#aac27f); }
+    .sched-cell.selected .sched-daynum { color:#1a1a1a; }
+    .sched-daynum { font-size:13px; font-weight:700; color:var(--text); }
+    .sched-dots { display:flex; flex-wrap:wrap; gap:2px; margin-top:auto; }
+    .sched-dot { width:6px; height:6px; border-radius:50%; }
+    .sched-day-title { font-size:17px; font-weight:800; color:var(--text); margin-bottom:10px; }
+    .sched-team-block { margin-bottom:14px; }
+    .sched-team-head { display:flex; align-items:center; gap:6px; font-weight:800; font-size:14px; margin-bottom:6px; }
+    .sched-team-chip { display:inline-block; width:12px; height:12px; border-radius:3px; }
+    .sched-mine-badge { font-size:10px; font-weight:700; background:var(--equip,#ca8342); color:#fff; padding:1px 6px; border-radius:10px; text-transform:uppercase; letter-spacing:.03em; }
+    .sched-person { padding:8px 10px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px; background:var(--card); }
+    .sched-person-name { font-weight:700; font-size:14px; color:var(--text); }
+    .sched-person-meta { font-size:12px; color:var(--muted); margin-top:2px; }
+    .sched-dbl { color:#c0392b; font-weight:700; font-size:12px; margin-top:4px; }
 
     .card { background: var(--card); border-radius: 12px; padding: 16px;
             margin-bottom: 12px; border: 1px solid var(--border); }
@@ -3417,14 +3559,7 @@ function dashboardPage(user) {
     .capture-btn:active { transform: scale(0.98); }
     .capture-btn-plus { font-size: 22px; line-height: 1; }
 
-    /* CODES TAB — v2.9.15 filter pills */
-    .codes-filter-bar { display: flex; gap: 8px; padding: 4px 0 16px; }
-    .codes-filter-pill { flex: 1; padding: 10px 0; border-radius: 20px; border: 2px solid var(--accent);
-                         font-size: 14px; font-weight: 700; cursor: pointer; letter-spacing: .04em;
-                         background: transparent; color: var(--accent); transition: background .15s, color .15s; }
-    .codes-filter-pill.active { background: var(--accent); color: #fff; }
-    body.dark .codes-filter-pill { border-color: var(--accent); color: var(--accent); }
-    body.dark .codes-filter-pill.active { background: var(--accent); color: #fff; }
+
     .home-section-title { display: flex; align-items: center; gap: 8px;
                           font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px;
                           color: var(--text); padding: 9px 12px; margin: 22px 0 12px;
@@ -3766,17 +3901,34 @@ function dashboardPage(user) {
 
   <div class="tabs-wrap">
     <div class="tabs" id="tabs-bar">
+      <!-- Everyday tools (alphabetical, Home anchored first) -->
       <div class="tab active" data-tab="home" onclick="showTab('home')">
         <span class="tab-icon">🏠</span><span>Home</span>
       </div>
-      <div class="tab" data-tab="notes" onclick="showTab('notes')">
-        <span class="tab-icon">📝</span><span>Notes</span>
+      <div class="tab" data-tab="ask" onclick="showTab('ask')">
+        <span class="tab-icon">💬</span><span>Ask</span>
       </div>
       <div class="tab" data-tab="team" onclick="showTab('team')">
         <span class="tab-icon">👥</span><span>My Team</span>
       </div>
+      <div class="tab" data-tab="notes" onclick="showTab('notes')">
+        <span class="tab-icon">📝</span><span>Notes</span>
+      </div>
       <div class="tab" data-tab="alerts" onclick="showTab('alerts')">
         <span class="tab-icon">🔔</span><span>Notifications</span>
+      </div>
+      <div class="tab" data-tab="content" onclick="showTab('content')">
+        <span class="tab-icon">📋</span><span>Reference</span>
+      </div>
+      <div class="tab" data-tab="schedule" onclick="showTab('schedule')">
+        <span class="tab-icon">📅</span><span>Schedule</span>
+      </div>
+      <!-- Safety tools (role-gated, alphabetical) -->
+      <div class="tab tab-codes" data-tab="codes" onclick="showTab('codes')" style="display:none">
+        <span class="tab-icon">🛡️</span><span>Codes</span>
+      </div>
+      <div class="tab tab-facilities" data-tab="facilities" onclick="showTab('facilities')" style="display:none">
+        <span class="tab-icon">🗺️</span><span>Maps</span>
       </div>
       <div class="tab tab-reports" data-tab="reports" onclick="showTab('reports')" style="display:none">
         <span class="tab-icon">📑</span><span>Reports</span>
@@ -3784,18 +3936,7 @@ function dashboardPage(user) {
       <div class="tab tab-watchlist" data-tab="watchlist" onclick="showTab('watchlist')" style="display:none">
         <span class="tab-icon">👤</span><span>Watch List</span>
       </div>
-      <div class="tab" data-tab="ask" onclick="showTab('ask')">
-        <span class="tab-icon">💬</span><span>Ask</span>
-      </div>
-      <div class="tab tab-codes" data-tab="codes" onclick="showTab('codes')" style="display:none">
-        <span class="tab-icon">🛡️</span><span>Codes</span>
-      </div>
-      <div class="tab tab-facilities" data-tab="facilities" onclick="showTab('facilities')" style="display:none">
-        <span class="tab-icon">🗺️</span><span>Maps</span>
-      </div>
-      <div class="tab" data-tab="content" onclick="showTab('content')">
-        <span class="tab-icon">📋</span><span>Reference</span>
-      </div>
+      <!-- Utility (last) -->
       <div class="tab tab-admin" data-tab="admin" onclick="showTab('admin')" style="display:none">
         <span class="tab-icon">🛠</span><span>Admin</span>
       </div>
@@ -3825,18 +3966,28 @@ function dashboardPage(user) {
     <div class="card">
       <div class="card-title">Quick Actions</div>
       <div class="home-actions" id="home-actions">
+        <!-- Everyday (alphabetical) -->
         <a class="home-action" style="background:#8dc6e8;color:#1a1a1a" href="#" onclick="showTab('ask');return false">
           <div class="home-action-icon">💬</div>
           <div class="home-action-name">Ask Tab</div>
-        </a>
-        <a class="home-action" style="background:#ca8342" href="#" onclick="showTab('notes');return false">
-          <div class="home-action-icon">📝</div>
-          <div class="home-action-name">Team Notes</div>
         </a>
         <a class="home-action" style="background:#c0392b" href="#" onclick="showTab('alerts');return false">
           <div class="home-action-icon">🔔</div>
           <div class="home-action-name">Notifications</div>
         </a>
+        <a class="home-action" style="background:#aac27f" href="#" onclick="showTab('content');return false">
+          <div class="home-action-icon">📋</div>
+          <div class="home-action-name">Reference</div>
+        </a>
+        <a class="home-action" style="background:#d97706" href="https://tab-supplies-worker.shanepass.workers.dev/" target="_blank" rel="noopener">
+          <div class="home-action-icon">🛒</div>
+          <div class="home-action-name">Supplies</div>
+        </a>
+        <a class="home-action" style="background:#ca8342" href="#" onclick="showTab('notes');return false">
+          <div class="home-action-icon">📝</div>
+          <div class="home-action-name">Team Notes</div>
+        </a>
+        <!-- Safety (role-gated, alphabetical) -->
         <a class="home-action home-action-codes" style="background:#2d8659;display:none" href="#" onclick="showTab('codes');return false">
           <div class="home-action-icon">🛡️</div>
           <div class="home-action-name">Codes</div>
@@ -3848,14 +3999,6 @@ function dashboardPage(user) {
         <a class="home-action home-action-watchlist" style="background:#402020;display:none" href="#" onclick="showTab('watchlist');return false">
           <div class="home-action-icon">👤</div>
           <div class="home-action-name">Watch List</div>
-        </a>
-        <a class="home-action" style="background:#aac27f" href="#" onclick="showTab('content');return false">
-          <div class="home-action-icon">📋</div>
-          <div class="home-action-name">Reference</div>
-        </a>
-        <a class="home-action" style="background:#d97706" href="https://tab-supplies-worker.shanepass.workers.dev/" target="_blank" rel="noopener">
-          <div class="home-action-icon">🛒</div>
-          <div class="home-action-name">Supplies</div>
         </a>
       </div>
     </div>
@@ -4027,22 +4170,8 @@ function dashboardPage(user) {
 
   <!-- CODES TAB -->
   <div class="tab-panel" id="tab-codes">
-    <!-- v2.9.15: Home / Codes filter pills -->
-    <div class="codes-filter-bar">
-      <button class="codes-filter-pill active" id="pill-home" onclick="setCodesView('home')">Reference</button>
-      <button class="codes-filter-pill" id="pill-codes" onclick="setCodesView('codes')">Codes</button>
-    </div>
-
-    <!-- HOME VIEW: reference + ops content -->
-    <div id="codes-view-home">
-      <div class="content-search-row">
-        <input type="text" id="ref-search" class="content-search-input" placeholder="🔍 Search reference (title or body)…" oninput="onRefSearchInput()">
-      </div>
-      <div id="codes-home-content"><div class="empty">Loading…</div></div>
-    </div>
-
-    <!-- CODES VIEW: 26-card safety flip chart -->
-    <div id="codes-view-codes" style="display:none">
+    <!-- Safety flip chart -->
+    <div id="codes-view-codes">
       <a class="capture-btn" href="/capture">
         <span class="capture-btn-plus">＋</span>
         <span>Capture — Incident or Person</span>
@@ -4076,6 +4205,23 @@ function dashboardPage(user) {
 
   <!-- v2.9.25: FACILITIES MAPS TAB -->
   <div class="tab-panel" id="tab-facilities">
+    <div class="card">
+      <div class="card-title">Facilities Maps</div>
+      <p style="font-size:14px;color:var(--muted);margin:0 0 12px">
+        Campus maps, evacuation routes, and equipment locations. Tap any map to open it full size.
+      </p>
+      <div class="content-search-row">
+        <input type="text" id="maps-search" class="content-search-input" placeholder="🔍 Search maps by name…" oninput="onMapsSearchInput()">
+      </div>
+      <div id="facilities-maps-broad"><div class="empty">Loading…</div></div>
+    </div>
+    <div class="card" id="facilities-maps-safety-card" style="display:none">
+      <div class="card-title">Safety Team Only</div>
+      <p style="font-size:14px;color:var(--muted);margin:0 0 12px">
+        Restricted maps — seating and responder deployment.
+      </p>
+      <div id="facilities-maps-safety"><div class="empty">Loading…</div></div>
+    </div>
     <div class="card" id="facilities-map-upload-card" style="display:none">
       <div class="card-title">Upload a Map</div>
       <p style="font-size:14px;color:var(--muted);margin:0 0 12px">
@@ -4122,22 +4268,26 @@ function dashboardPage(user) {
       <button type="button" class="btn-primary" id="map-upload-btn" onclick="uploadFacilitiesMap()" style="width:100%">Upload Map</button>
       <div id="map-upload-status" style="font-size:14px;margin-top:10px"></div>
     </div>
+  </div>
+
+  <!-- v2.9.37: SCHEDULE TAB (Stage 2 — read-only) -->
+  <div class="tab-panel" id="tab-schedule">
     <div class="card">
-      <div class="card-title">Facilities Maps</div>
-      <p style="font-size:14px;color:var(--muted);margin:0 0 12px">
-        Campus maps, evacuation routes, and equipment locations. Tap any map to open it full size.
-      </p>
-      <div class="content-search-row">
-        <input type="text" id="maps-search" class="content-search-input" placeholder="🔍 Search maps by name…" oninput="onMapsSearchInput()">
+      <div class="sched-head">
+        <button type="button" class="sched-nav-btn" id="sched-prev" onclick="schedShiftMonth(-1)">‹</button>
+        <div class="sched-month-label" id="sched-month-label">Loading…</div>
+        <button type="button" class="sched-nav-btn" id="sched-next" onclick="schedShiftMonth(1)">›</button>
       </div>
-      <div id="facilities-maps-broad"><div class="empty">Loading…</div></div>
+      <div class="sched-dow">
+        <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+      </div>
+      <div class="sched-grid" id="sched-grid">
+        <div class="empty">Loading…</div>
+      </div>
     </div>
-    <div class="card" id="facilities-maps-safety-card" style="display:none">
-      <div class="card-title">Safety Team Only</div>
-      <p style="font-size:14px;color:var(--muted);margin:0 0 12px">
-        Restricted maps — seating and responder deployment.
-      </p>
-      <div id="facilities-maps-safety"><div class="empty">Loading…</div></div>
+    <div class="card" id="sched-day-card" style="display:none">
+      <div class="sched-day-title" id="sched-day-title"></div>
+      <div id="sched-day-body"><div class="empty">Tap a day to see who&#39;s on.</div></div>
     </div>
   </div>
 
@@ -4323,9 +4473,9 @@ function showTab(name) {
   if (name === 'notes') loadNotes();
   if (name === 'watchlist') loadWatchList();
   if (name === 'team') loadTeam();
-  if (name === 'codes') renderCodesHomeView();
   if (name === 'home') invalidateSearchCache();
   if (name === 'facilities') loadFacilitiesMaps();
+  if (name === 'schedule') loadSchedule();
   if (name === 'ask') {
     setTimeout(function() {
       var q = document.getElementById('ask-q');
@@ -4372,9 +4522,19 @@ function updateTabArrows() {
   setTimeout(updateTabArrows, 500);
 })();
 
-async function loadMe() {
+async function loadMe(attempt) {
+  attempt = attempt || 1;
   try {
-    const res = await fetch('/api/me', { credentials: 'same-origin', cache: 'no-store' });
+    // v2.9.38: 6s timeout. If the first fetch stalls (old service worker
+    // intercepting mid-deploy), abort and retry once against the live worker.
+    var controller = new AbortController();
+    var timer = setTimeout(function() { controller.abort(); }, 6000);
+    var res;
+    try {
+      res = await fetch('/api/me', { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
     if (res.status === 401) {
       // Session expired or cache served a stale logged-in shell.
       // Don't hang on "Loading…" — send the user to a fresh login.
@@ -4395,7 +4555,17 @@ async function loadMe() {
       el.innerHTML = me.roles.map(r => '<span class="pill pill-role">' + esc(r) + '</span>').join(' ');
     }
     if (ALL_ROLES.length > 0) renderRoleBoxes();
-  } catch (e) {}
+  } catch (e) {
+    // v2.9.38: timeout or network error. Retry once, then show a tap-to-retry
+    // link instead of leaving the panel stuck on "Loading…" forever.
+    if (attempt < 2) {
+      return loadMe(attempt + 1);
+    }
+    var el = document.getElementById('roles-list');
+    if (el) {
+      el.innerHTML = '<div class="empty"><a href="#" onclick="loadMe(1);return false" style="color:#6d3d31;font-weight:700">Still loading — tap to retry</a></div>';
+    }
+  }
 }
 
 // v2.5: Content tab — role boxes → content tiles → detail
@@ -5783,90 +5953,6 @@ function toggleSafetyDirectory() {
   }
 }
 
-let ACTIVE_CODES_VIEW = 'home';
-
-function setCodesView(view) {
-  ACTIVE_CODES_VIEW = view;
-  document.getElementById('pill-home').classList.toggle('active', view === 'home');
-  document.getElementById('pill-codes').classList.toggle('active', view === 'codes');
-  document.getElementById('codes-view-home').style.display = view === 'home' ? '' : 'none';
-  document.getElementById('codes-view-codes').style.display = view === 'codes' ? '' : 'none';
-  if (view === 'home') renderCodesHomeView();
-}
-
-function renderCodesHomeView() {
-  const el = document.getElementById('codes-home-content');
-  if (!el) return;
-  let refItems = (CONTENT_ALL || []).filter(c => !c.is_emergency);
-  // v2.9.35: reference search — filter to matches across title + body.
-  const rq = REF_SEARCH;
-  if (rq) {
-    refItems = refItems.filter(function(c) {
-      var title = (c.title || '').toLowerCase();
-      var body = (c.body || '').toLowerCase();
-      return title.indexOf(rq) !== -1 || body.indexOf(rq) !== -1;
-    });
-  }
-  if (refItems.length === 0) {
-    el.innerHTML = rq
-      ? '<div class="empty">No reference content matches "' + esc(rq) + '".</div>'
-      : '<div class="empty">No reference content available.</div>';
-    return;
-  }
-  const byTag = {};
-  refItems.forEach(c => { const t = c.event_tag || 'General'; if (!byTag[t]) byTag[t] = []; byTag[t].push(c); });
-  const tagConfig = {
-    sunday_morning:       { label: 'Sunday Morning',       icon: '☀️',  color: '#d97706' },
-    living_nativity_2026: { label: 'Living Nativity 2026', icon: '🎄',  color: '#2d8659' },
-    wednesday:            { label: 'Wednesday',             icon: '📅',  color: '#7c3aed' },
-    events:               { label: 'Events',                icon: '📣',  color: '#059669' },
-    people:               { label: 'People',                icon: '👤',  color: '#6d3d31' },
-    vendors:              { label: 'Vendors',               icon: '🛒',  color: '#ca8342' },
-    equipment:            { label: 'Equipment & Supplies',  icon: '📦',  color: '#aac27f' },
-    General:              { label: 'General Reference',     icon: '📋',  color: '#3b82f6' },
-  };
-  const tagOrder = ['sunday_morning','living_nativity_2026','wednesday','events','people','vendors','equipment','General'];
-  const orderedTags = [...new Set([...tagOrder,...Object.keys(byTag)])].filter(t => byTag[t]);
-  // v2.9.31: parent->child. Each category is a collapsed carat row (closed by
-  // default). Tap a category to reveal its cards; accordion closes the others.
-  // Each child card keeps the existing title-row -> packetize body behavior.
-  el.innerHTML = orderedTags.map((tag, idx) => {
-    const items = byTag[tag]; if (!items) return '';
-    const cfg = tagConfig[tag] || { label: tag, icon: '📄', color: '#6b7280' };
-    const secId = 'refsec-' + idx;
-    const header =
-      '<div class="home-section-title ref-parent' + (rq ? ' open' : '') + '" data-refsec="' + secId + '"' +
-        ' style="border-left-color:' + cfg.color + '"' +
-        ' onclick="toggleRefSection(&apos;' + secId + '&apos;)">' +
-        '<span class="home-section-icon">' + cfg.icon + '</span>' +
-        '<span class="ref-parent-label">' + esc(cfg.label) + '</span>' +
-        '<span class="ref-parent-count">(' + items.length + ')</span>' +
-        '<span class="ref-parent-carat">&#9654;</span>' +
-      '</div>';
-    const childList =
-      '<div class="home-ref-list ref-children" id="' + secId + '" style="display:' + (rq ? 'flex' : 'none') + '">' +
-      items.map(c =>
-        '<div class="home-ref-card" onclick="toggleRefCard(this)">' +
-          '<div class="home-ref-title">' +
-            '<span>' + esc(c.title) + '</span>' +
-            '<span class="home-ref-chevron">&#9654;</span>' +
-          '</div>' +
-          '<div class="home-ref-body" style="display:none">' + packetize(linkifyContent(c.body)) + '</div>' +
-        '</div>'
-      ).join('') +
-      '</div>';
-    return '<div class="codes-section">' + header + childList + '</div>';
-  }).join('');
-}
-
-// v2.9.35: reference search state + handler.
-var REF_SEARCH = '';
-function onRefSearchInput() {
-  var inp = document.getElementById('ref-search');
-  REF_SEARCH = (inp ? inp.value : '').trim().toLowerCase();
-  renderCodesHomeView();
-}
-
 // v2.9.31: accordion toggle for Reference category rows. Opening one category
 // closes the others so the list never grows past one open group.
 function toggleRefSection(secId) {
@@ -5976,6 +6062,191 @@ async function logout() {
   window.location.href = '/';
 }
 
+// ═══ v2.9.37: SCHEDULE (Stage 2 — read-only) ═══
+var SCHED_MONTH = null;            // 'YYYY-MM' currently shown
+var SCHED_DATA = null;             // last fetched payload
+var SCHED_SELECTED = null;         // 'YYYY-MM-DD' selected day
+var SCHED_DID_DEFAULT = false;     // have we jumped to next service day yet?
+
+function schedTodayMonth() {
+  var n = new Date();
+  return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0');
+}
+function schedTodayStr() {
+  var n = new Date();
+  return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+}
+function schedMonthName(m) {
+  var parts = m.split('-');
+  var d = new Date(Number(parts[0]), Number(parts[1]) - 1, 1);
+  return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+}
+function schedShiftMonth(delta) {
+  if (!SCHED_MONTH) SCHED_MONTH = schedTodayMonth();
+  var parts = SCHED_MONTH.split('-');
+  var y = Number(parts[0]); var mo = Number(parts[1]) - 1;
+  var d = new Date(y, mo + delta, 1);
+  SCHED_MONTH = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  loadSchedule();
+}
+
+function loadSchedule() {
+  if (!SCHED_MONTH) SCHED_MONTH = schedTodayMonth();
+  var grid = document.getElementById('sched-grid');
+  if (grid) grid.innerHTML = '<div class="empty">Loading…</div>';
+  fetch('/api/schedule?month=' + encodeURIComponent(SCHED_MONTH))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      SCHED_DATA = data;
+      // On first open, if there is a future service day, jump to its month.
+      if (!SCHED_DID_DEFAULT) {
+        SCHED_DID_DEFAULT = true;
+        if (data.next_day) {
+          var nm = data.next_day.slice(0, 7);
+          SCHED_SELECTED = data.next_day;
+          if (nm !== SCHED_MONTH) { SCHED_MONTH = nm; loadSchedule(); return; }
+        }
+      }
+      renderSchedMonth();
+      if (SCHED_SELECTED && SCHED_SELECTED.slice(0, 7) === SCHED_MONTH) {
+        renderSchedDay(SCHED_SELECTED);
+      }
+    })
+    .catch(function() {
+      if (grid) grid.innerHTML = '<div class="empty">Could not load schedule.</div>';
+    });
+}
+
+function schedAssignmentsFor(dateStr) {
+  if (!SCHED_DATA || !SCHED_DATA.assignments) return [];
+  return SCHED_DATA.assignments.filter(function(a) { return a.event_date === dateStr; });
+}
+
+function renderSchedMonth() {
+  var label = document.getElementById('sched-month-label');
+  if (label) label.textContent = schedMonthName(SCHED_MONTH);
+  var grid = document.getElementById('sched-grid');
+  if (!grid) return;
+
+  var parts = SCHED_MONTH.split('-');
+  var y = Number(parts[0]); var mo = Number(parts[1]) - 1;
+  var first = new Date(y, mo, 1);
+  var startDow = first.getDay();              // 0=Sun
+  var daysInMonth = new Date(y, mo + 1, 0).getDate();
+  var today = schedTodayStr();
+
+  var html = '';
+  for (var i = 0; i < startDow; i++) {
+    html += '<div class="sched-cell empty-cell"></div>';
+  }
+  for (var day = 1; day <= daysInMonth; day++) {
+    var ds = SCHED_MONTH + '-' + String(day).padStart(2, '0');
+    var dayAssigns = schedAssignmentsFor(ds);
+    var teams = {};
+    dayAssigns.forEach(function(a) { teams[a.role] = true; });
+    var teamIds = Object.keys(teams);
+
+    var cls = 'sched-cell';
+    if (ds === today) cls += ' today';
+    if (ds === SCHED_SELECTED) cls += ' selected';
+
+    var dots = '';
+    teamIds.slice(0, 6).forEach(function(rid) {
+      dots += '<span class="sched-dot" style="background:' + schedTeamColor(rid) + '"></span>';
+    });
+
+    html += '<div class="' + cls + '" onclick="renderSchedDay(&#39;' + ds + '&#39;)">'
+          + '<span class="sched-daynum">' + day + '</span>'
+          + (dots ? '<div class="sched-dots">' + dots + '</div>' : '')
+          + '</div>';
+  }
+  grid.innerHTML = html;
+}
+
+function schedTeamColor(roleId) {
+  if (typeof ROLE_STYLE !== 'undefined' && ROLE_STYLE[roleId]) return ROLE_STYLE[roleId].color;
+  return '#6b7280';
+}
+function schedTeamLabel(roleId) {
+  if (typeof ALL_ROLES !== 'undefined' && ALL_ROLES.length) {
+    for (var i = 0; i < ALL_ROLES.length; i++) {
+      if (ALL_ROLES[i].id === roleId) return ALL_ROLES[i].display_name || roleId;
+    }
+  }
+  return roleId;
+}
+function schedIsMine(roleId) {
+  return (typeof USER_ROLES !== 'undefined') && USER_ROLES.indexOf(roleId) !== -1;
+}
+
+function renderSchedDay(dateStr) {
+  SCHED_SELECTED = dateStr;
+  renderSchedMonth(); // refresh selected highlight
+  var card = document.getElementById('sched-day-card');
+  var title = document.getElementById('sched-day-title');
+  var body = document.getElementById('sched-day-body');
+  if (!card || !title || !body) return;
+  card.style.display = '';
+
+  var parts = dateStr.split('-');
+  var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  title.textContent = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+
+  var assigns = schedAssignmentsFor(dateStr);
+  if (!assigns.length) {
+    body.innerHTML = '<div class="empty">No one scheduled this day yet.</div>';
+    return;
+  }
+
+  // Group by team
+  var byTeam = {};
+  assigns.forEach(function(a) {
+    if (!byTeam[a.role]) byTeam[a.role] = [];
+    byTeam[a.role].push(a);
+  });
+
+  // Detect double-booked people (same person, same day, 2+ teams)
+  var personCount = {};
+  assigns.forEach(function(a) {
+    var k = a.user_id || a.display_name;
+    personCount[k] = (personCount[k] || 0) + 1;
+  });
+
+  // Sort: my teams first, then alphabetical by label
+  var teamIds = Object.keys(byTeam);
+  teamIds.sort(function(a, b) {
+    var ma = schedIsMine(a) ? 0 : 1;
+    var mb = schedIsMine(b) ? 0 : 1;
+    if (ma !== mb) return ma - mb;
+    return schedTeamLabel(a).localeCompare(schedTeamLabel(b));
+  });
+
+  var html = '';
+  teamIds.forEach(function(rid) {
+    var mine = schedIsMine(rid);
+    html += '<div class="sched-team-block">';
+    html += '<div class="sched-team-head">'
+          + '<span class="sched-team-chip" style="background:' + schedTeamColor(rid) + '"></span>'
+          + '<span>' + esc(schedTeamLabel(rid)) + '</span>'
+          + (mine ? '<span class="sched-mine-badge">My team</span>' : '')
+          + '</div>';
+    byTeam[rid].forEach(function(a) {
+      var meta = [];
+      if (a.time_block) meta.push(esc(a.time_block));
+      if (a.position) meta.push(esc(a.position));
+      var k = a.user_id || a.display_name;
+      var dbl = personCount[k] > 1;
+      html += '<div class="sched-person">'
+            + '<div class="sched-person-name">' + esc(a.display_name || 'Unknown') + '</div>'
+            + (meta.length ? '<div class="sched-person-meta">' + meta.join(' • ') + '</div>' : '')
+            + (dbl ? '<div class="sched-dbl">⚠ Also on another team this day</div>' : '')
+            + '</div>';
+    });
+    html += '</div>';
+  });
+  body.innerHTML = html;
+}
+
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
     ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -5994,7 +6265,7 @@ function linkifyContent(s) {
   var emailRe = new RegExp('\\\\b[a-zA-Z0-9._%+\\\\-]+@[a-zA-Z0-9.\\\\-]+\\\\.[a-zA-Z]{2,}\\\\b', 'g');
   var phoneRe = new RegExp('(\\\\(\\\\d{3}\\\\)\\\\s?\\\\d{3}[-.\\\\s]?\\\\d{4}|\\\\d{3}[-.]\\\\d{3}[-.]\\\\d{4})', 'g');
   var nonDigitRe = new RegExp('\\\\D', 'g');
-  var headerRe = new RegExp('^([A-Z][A-Z0-9 /&()\\'.,\\\\-]{1,49})$', 'gm');
+  var headerRe = new RegExp("^([A-Z][A-Z0-9 /&()'.,\\\\-]{1,49})$", 'gm');
   const withEmails = safe.replace(emailRe,
     m => '<a class="tab-link" href="mailto:' + m + '">' + m + '</a>'
   );
@@ -6176,7 +6447,7 @@ async function runGlobalSearch() {
       var b = (c.body || '').toLowerCase();
       if (t.indexOf(q) !== -1 || b.indexOf(q) !== -1) {
         hits.push({ type: 'Code', title: c.title, sub: 'Safety flip chart',
-          action: function() { showTab('codes'); setTimeout(function() { setCodesView('codes'); setTimeout(function() { showCode(c.id); }, 140); }, 80); } });
+          action: function() { showTab('codes'); setTimeout(function() { showCode(c.id); }, 80); } });
       }
     });
   }
@@ -6431,10 +6702,15 @@ setInterval(function() {
 })();
 
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', function() {
-    navigator.serviceWorker.register('/service-worker.js')
-      .catch(function(err) { console.log('SW registration failed:', err); });
-  });
+  // v2.9.39: We no longer use a service worker (the old one caused 0-byte
+  //   responses). The SW served at /service-worker.js now self-unregisters.
+  //   The page must STOP registering it, otherwise register -> activate ->
+  //   self-unregister -> reload loops and interrupts startup (/api/me never
+  //   completes, "Your Roles" stuck on Loading). So: register nothing, and
+  //   actively clean up any SW still registered in this browser.
+  navigator.serviceWorker.getRegistrations()
+    .then(function(regs) { regs.forEach(function(r) { r.unregister(); }); })
+    .catch(function(err) {});
 }
 </script>
 </body>
