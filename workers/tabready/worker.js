@@ -1,4 +1,12 @@
-const VERSION = '2.9.41';
+const VERSION = '2.9.42';
+// v2.9.42 — Four remaining punch-list items: (1) Notes tab: retitled
+//   "Team Note" with scope description (repairs/supplies/campus care).
+//   (2) Reports tab: context card "Safety & Incident Reports" with scope
+//   description. (3) Schedule: color block header (Send blue #8dc6e8).
+//   (4) Reference tab: Facilities quick-access grid (AC Repair, Vendors,
+//   Staff, Tools, Outside Equipment, Phone Numbers, FAQ) for staff/admin —
+//   each button searches reference content for that subject. No schema,
+//   route, or permission change.
 // v2.9.41 — Three surgical layout fixes: (1) Codes tab: removed Reference
 //   pill/sub-view — Codes is now purely the emergency safety flip chart;
 //   Reference content lives in its own Reference tab. (2) Maps tab: Upload
@@ -3558,7 +3566,10 @@ function dashboardPage(user) {
                    text-transform: uppercase; letter-spacing: 0.5px; }
     .capture-btn:active { transform: scale(0.98); }
     .capture-btn-plus { font-size: 22px; line-height: 1; }
-
+    .fac-quick-btn { width:100%; padding:14px 10px; border:1px solid var(--border); border-radius:10px;
+                     background:var(--card); color:var(--text); font-size:15px; font-weight:700;
+                     cursor:pointer; text-align:left; transition:background .15s; }
+    .fac-quick-btn:active { background:var(--accent-light,#e8f0e0); }
 
     .home-section-title { display: flex; align-items: center; gap: 8px;
                           font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px;
@@ -4007,7 +4018,8 @@ function dashboardPage(user) {
   <!-- v2.5: NOTES TAB (Team Notes) -->
   <div class="tab-panel" id="tab-notes">
     <div class="card">
-      <div class="card-title">Post a Team Note</div>
+      <div class="card-title">Team Note</div>
+      <p style="font-size:14px;color:var(--muted);margin:0 0 12px">Repairs, supply shortages, broken fixtures, equipment issues, campus care — notifies the relevant team leader.</p>
       <div class="notes-form">
         <textarea id="note-body" placeholder="Supplies low, broken fixture, heads-up to a team leader. Bullet points welcome."></textarea>
         <select id="note-role">
@@ -4127,6 +4139,10 @@ function dashboardPage(user) {
 
   <!-- REPORTS TAB -->
   <div class="tab-panel" id="tab-reports">
+    <div class="card" style="border-left:4px solid #6d3d31">
+      <div class="card-title">Safety &amp; Incident Reports</div>
+      <p style="font-size:14px;color:var(--muted);margin:0">Filed via Capture — incidents, persons of concern, and safety events. Visible to safety team and staff.</p>
+    </div>
     <div class="card">
       <div class="card-title">Recent Reports</div>
       <div id="reports-list"><div class="empty">Loading…</div></div>
@@ -4272,6 +4288,10 @@ function dashboardPage(user) {
 
   <!-- v2.9.37: SCHEDULE TAB (Stage 2 — read-only) -->
   <div class="tab-panel" id="tab-schedule">
+    <div class="card" style="background:var(--send,#8dc6e8);border:none;padding:14px 16px 10px">
+      <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.7px;color:#1a1a1a;margin-bottom:2px">Schedule</div>
+      <div style="font-size:13px;color:#1a3a4a;opacity:0.85">Who&#39;s on when. Tap any date to see the team.</div>
+    </div>
     <div class="card">
       <div class="sched-head">
         <button type="button" class="sched-nav-btn" id="sched-prev" onclick="schedShiftMonth(-1)">‹</button>
@@ -4295,6 +4315,18 @@ function dashboardPage(user) {
   <div class="tab-panel" id="tab-content">
     <!-- View 1: Role boxes -->
     <div id="content-view-roles">
+      <div class="card fac-quick-card" style="display:none">
+        <div class="card-title">Facilities</div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:4px">
+          <button type="button" class="fac-quick-btn" onclick="facQuickSearch('AC Repair')">AC Repair</button>
+          <button type="button" class="fac-quick-btn" onclick="facQuickSearch('Vendors')">Vendors</button>
+          <button type="button" class="fac-quick-btn" onclick="facQuickSearch('Staff')">Staff</button>
+          <button type="button" class="fac-quick-btn" onclick="facQuickSearch('Tools')">Tools</button>
+          <button type="button" class="fac-quick-btn" onclick="facQuickSearch('Outside Equipment')">Outside Equipment</button>
+          <button type="button" class="fac-quick-btn" onclick="facQuickSearch('Phone Numbers')">Phone Numbers</button>
+          <button type="button" class="fac-quick-btn" onclick="facQuickSearch('FAQ')">FAQ</button>
+        </div>
+      </div>
       <div class="card">
         <div class="card-title">Pick a Team</div>
         <p style="font-size:14px;color:var(--muted);margin:0 0 12px">
@@ -4380,6 +4412,7 @@ if (USER_CAN_SEE_FACILITIES_MAP || USER_CAN_SEE_FACILITIES_MAP_SAFETY) {
 // v2.8: show "Post Notification" card to safety/staff/elders/admin
 if (USER_CAN_BROADCAST) {
   document.querySelectorAll('.notif-post-card').forEach(t => t.style.display = '');
+  document.querySelectorAll('.fac-quick-card').forEach(t => t.style.display = '');
 }
 
 function applyTheme(theme) {
@@ -4831,6 +4864,12 @@ function onContentSearchInput() {
   var inp = document.getElementById('content-search');
   CONTENT_SEARCH = (inp ? inp.value : '').trim().toLowerCase();
   renderContentTiles();
+}
+
+function facQuickSearch(term) {
+  showTab('content');
+  var inp = document.getElementById('content-global-search');
+  if (inp) { inp.value = term; onGlobalContentSearchInput(); inp.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
 }
 
 // v2.9.35: global search across ALL packets in every team the user can see.
