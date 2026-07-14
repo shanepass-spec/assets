@@ -32,11 +32,34 @@ test('no shipping vendors on the trip → total is complete, not pending', () =>
   assert.equal(s.total, 5000);
 });
 
-test('multiple shipping vendors: one missing keeps it pending', () => {
+test('missing REQUIRED (Webstaurant) shipping keeps it pending; entered optional is added', () => {
   const s = computeOrderSummary(10000, true, ['Webstaurant', 'Amazon'], { Amazon: 500 });
   assert.equal(s.pending, true);
   assert.deepEqual(s.missing, ['Webstaurant']);
   assert.equal(s.knownShipping, 500, 'known shipping still summed for display');
+});
+
+test('OPTIONAL Amazon shipping never blocks the total (defaults to included/$0)', () => {
+  // Amazon in the trip, no Amazon shipping entered → NOT pending, counted as $0.
+  const s = computeOrderSummary(10000, true, ['Amazon'], {});
+  assert.equal(s.pending, false, 'optional shipping must not force Pending');
+  assert.deepEqual(s.missing, []);
+  assert.equal(s.knownShipping, 0);
+  assert.equal(s.total, 10000);
+});
+
+test('Amazon + Webstaurant, only Amazon unentered → still complete (Amazon optional)', () => {
+  const s = computeOrderSummary(10000, true, ['Webstaurant', 'Amazon'], { Webstaurant: 8900 });
+  assert.equal(s.pending, false);
+  assert.equal(s.knownShipping, 8900, 'Amazon unentered adds nothing, Webstaurant entered completes it');
+  assert.equal(s.total, 18900);
+});
+
+test('an entered Amazon charge is added to the total', () => {
+  const s = computeOrderSummary(10000, true, ['Webstaurant', 'Amazon'], { Webstaurant: 8900, Amazon: 1200 });
+  assert.equal(s.pending, false);
+  assert.equal(s.knownShipping, 10100);
+  assert.equal(s.total, 20100);
 });
 
 test('shipping estimate saves, updates, and clears (persistent)', async () => {

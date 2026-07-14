@@ -17,6 +17,12 @@
 // AUTH
 // Role code in cookie (30 days). Auto-login via ?code=XXX URL.
 //
+// NEW IN v2.1.2 — SHIPPING REQUIREMENT SCOPE
+//   - Only REQUIRED shipping vendors (Webstaurant) keep the order total
+//     "pending" when unentered. Optional vendors (Amazon) default to
+//     included/$0, show "Included ($0)" rather than "Not entered", and
+//     never block the complete estimate.
+//
 // NEW IN v2.1.1 — SHOPPING TOTAL + SHIPPING
 //   - /shane now reads products-first: the financial summary moved
 //     BELOW the vendor list and reads as the final calculation.
@@ -169,7 +175,7 @@ export default {
 
     try {
       if (path === '/health') {
-        return json({ ok: true, service: 'tab-supplies', version: '2.1.1' });
+        return json({ ok: true, service: 'tab-supplies', version: '2.1.2' });
       }
 
       // Auto-login from URL param (?code=XXX)
@@ -864,6 +870,7 @@ function sharedStyles() {
   .ship-label { font-size: 13px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.4px; }
   .ship-val { font-size: 15px; font-weight: 700; color: var(--brown); margin-top: 2px; }
   .ship-val.ship-none { color: var(--text-tertiary); font-weight: 600; font-style: italic; }
+  .ship-val.ship-included { color: var(--text-tertiary); font-weight: 600; }
   .ship-btn {
     background: white; border: 1px solid var(--cross); color: var(--cross);
     padding: 8px 12px; border-radius: 8px; font-size: 12px; font-weight: 700;
@@ -1256,7 +1263,7 @@ async function shanePage(env) {
   const renderVendor = (key, color, textColor, tag, items) => {
     const rows = items.map(f => shopRow(f, pricing)).join('');
     const ship = (SHIPPING_VENDORS.includes(key) && items.some(f => !f.bought_by))
-      ? shippingRow(key, shipMap[key]) : '';
+      ? shippingRow(key, shipMap[key], REQUIRED_SHIPPING_VENDORS.includes(key)) : '';
     return `
       <div class="vendor-card">
         <div class="vendor-header" style="background:${color};color:${textColor}">
@@ -1304,15 +1311,20 @@ async function shanePage(env) {
 }
 
 // Editable shipping row inside a shipping-capable vendor section.
-function shippingRow(store, cents) {
+// Required vendors (Webstaurant) show "Not entered" until set; optional vendors
+// (Amazon) default to "Included ($0)" and never imply action is required.
+function shippingRow(store, cents, required) {
   const has = cents != null;
+  const valText = has ? fmtMoney(cents, true) : (required ? 'Not entered' : 'Included ($0)');
+  const valClass = has ? '' : (required ? ' ship-none' : ' ship-included');
+  const btnText = has ? 'Edit' : (required ? 'Add estimate' : 'Add shipping');
   return `
-    <div class="ship-row" data-ship-store="${escapeHtml(store)}" data-ship-cents="${has ? cents : ''}">
+    <div class="ship-row" data-ship-store="${escapeHtml(store)}" data-ship-required="${required ? '1' : '0'}" data-ship-cents="${has ? cents : ''}">
       <div class="ship-main">
         <div class="ship-label">${escapeHtml(store)} shipping</div>
-        <div class="ship-val${has ? '' : ' ship-none'}">${has ? fmtMoney(cents, true) : 'Not entered'}</div>
+        <div class="ship-val${valClass}">${valText}</div>
       </div>
-      <button type="button" class="ship-btn" data-ship-edit="${escapeHtml(store)}">${has ? 'Edit' : 'Add estimate'}</button>
+      <button type="button" class="ship-btn" data-ship-edit="${escapeHtml(store)}">${btnText}</button>
     </div>`;
 }
 
@@ -1778,9 +1790,11 @@ function shopScript() {
           const missing = [];
           document.querySelectorAll('[data-ship-store]').forEach(el => {
             const store = el.getAttribute('data-ship-store');
+            const required = el.getAttribute('data-ship-required') === '1';
             const raw = el.getAttribute('data-ship-cents');
             const c = (raw === '' || raw == null) ? null : parseInt(raw, 10);
-            if (c == null) missing.push(store); else knownShip += c;
+            if (c != null) knownShip += c;
+            else if (required) missing.push(store); // only required shipping blocks the total
             if (store === 'Webstaurant') wsCents = c;
             else if (c != null) { otherKnown += c; otherHas = true; }
           });
@@ -1849,8 +1863,13 @@ function shopScript() {
               row.setAttribute('data-ship-cents', cents == null ? '' : cents);
               const val = row.querySelector('.ship-val');
               const btn = row.querySelector('.ship-btn');
-              if (val) { val.textContent = cents == null ? 'Not entered' : window.TSCost.fmt(cents, true); val.classList.toggle('ship-none', cents == null); }
-              if (btn) btn.textContent = cents == null ? 'Add estimate' : 'Edit';
+              const required = row.getAttribute('data-ship-required') === '1';
+              if (val) {
+                val.textContent = cents == null ? (required ? 'Not entered' : 'Included ($0)') : window.TSCost.fmt(cents, true);
+                val.classList.toggle('ship-none', cents == null && required);
+                val.classList.toggle('ship-included', cents == null && !required);
+              }
+              if (btn) btn.textContent = cents == null ? (required ? 'Add estimate' : 'Add shipping') : 'Edit';
             }
             shipModal.classList.remove('show');
             toast(cents == null ? '✓ Shipping cleared' : '✓ Shipping saved');
@@ -2675,8 +2694,12 @@ function computeLine(est, qty, store, tiers) {
   return { hasEstimate: true, lineCents: Math.round(unitCents * q), isExact: est.isExact, tierApplied, unitCents };
 }
 
-// Vendors where shipping is a real cost that must be entered, not assumed $0.
+// Vendors that get an editable shipping row on /shane.
 const SHIPPING_VENDORS = ['Webstaurant', 'Amazon'];
+// Only these BLOCK a complete estimate when their shipping is unknown —
+// Webstaurant shipping materially changes the buying decision. Other shipping
+// vendors (Amazon) are optional: unentered means included / $0, never pending.
+const REQUIRED_SHIPPING_VENDORS = ['Webstaurant'];
 
 async function loadShippingEstimates(env) {
   const res = await env.DB.prepare(`SELECT store, cents FROM shipping_estimates`).all();
@@ -2685,16 +2708,18 @@ async function loadShippingEstimates(env) {
   return map;
 }
 
-// Roll the item subtotal + entered shipping into the order estimate. Unknown
-// shipping for a vendor you're ordering from is NEVER counted as $0 — it makes
-// the order total "pending" and the honest label falls back to the item
-// subtotal ("Known item subtotal ≈ $X · final estimate pending shipping").
+// Roll the item subtotal + entered shipping into the order estimate. Only a
+// REQUIRED shipping vendor (Webstaurant) that hasn't been entered keeps the
+// order total "pending" — unknown required shipping is never counted as $0.
+// Optional vendors (Amazon) default to included/$0 and never block the total;
+// an entered optional charge is simply added.
 function computeOrderSummary(itemsCents, itemsExact, activeShippingVendors, shipMap) {
   let knownShipping = 0;
   const missing = [];
   for (const v of activeShippingVendors) {
     if (shipMap[v] != null) knownShipping += shipMap[v];
-    else missing.push(v);
+    else if (REQUIRED_SHIPPING_VENDORS.includes(v)) missing.push(v); // only required blocks
+    // optional vendor, unentered → treated as included/$0, no pending
   }
   const pending = missing.length > 0;
   return {
