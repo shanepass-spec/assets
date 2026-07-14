@@ -17,6 +17,17 @@
 // AUTH
 // Role code in cookie (30 days). Auto-login via ?code=XXX URL.
 //
+// NEW IN v2.1.1 — SHOPPING TOTAL + SHIPPING
+//   - /shane now reads products-first: the financial summary moved
+//     BELOW the vendor list and reads as the final calculation.
+//   - Shipping is part of the real estimate: shipping-capable vendors
+//     (Webstaurant, Amazon) get an editable shipping row, and the
+//     bottom summary shows Items subtotal → shipping → order total.
+//     Unknown shipping is never counted as $0 — the total reads
+//     "pending" and falls back to the known item subtotal.
+//   - Sales-tax controls removed (church is tax-exempt; tax stays $0).
+//   - New table shipping_estimates (one row per store).
+//
 // NEW IN v2.1 — SHOPPING COST INTELLIGENCE (additive, reversible)
 //   - Estimated trip subtotal beneath the item count, with
 //     unknown-price count, expandable store subtotals, and
@@ -158,7 +169,7 @@ export default {
 
     try {
       if (path === '/health') {
-        return json({ ok: true, service: 'tab-supplies', version: '2.1' });
+        return json({ ok: true, service: 'tab-supplies', version: '2.1.1' });
       }
 
       // Auto-login from URL param (?code=XXX)
@@ -248,6 +259,11 @@ export default {
       if (path === '/api/price/save' && method === 'POST') {
         if (role !== 'shane') return json({ error: 'forbidden' }, 403);
         return await apiPriceSave(request, env);
+      }
+      // Save / clear a per-vendor shipping estimate (Shane only).
+      if (path === '/api/shipping/save' && method === 'POST') {
+        if (role !== 'shane') return json({ error: 'forbidden' }, 403);
+        return await apiShippingSave(request, env);
       }
       // Ingest finalized receipt lines from TabReady (token-guarded; no cookie needed).
       if (path === '/api/receipt-ingest' && method === 'POST') {
@@ -801,8 +817,6 @@ function sharedStyles() {
     padding: 8px 12px; border-radius: 8px; font-size: 12px; font-weight: 700;
     text-transform: uppercase; letter-spacing: 0.4px; cursor: pointer; font-family: inherit; flex-shrink: 0;
   }
-  .trip-tax-toggle { font-size: 12px; color: var(--text-secondary); margin-top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .trip-tax-toggle label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
   .store-toggle {
     background: none; border: none; color: var(--cross); font-weight: 700; font-size: 13px;
     cursor: pointer; font-family: inherit; padding: 8px 0 0; margin-top: 4px;
@@ -840,6 +854,44 @@ function sharedStyles() {
   }
   .adjust-line { font-size: 13px; color: var(--text-secondary); margin: 6px 0; display: flex; justify-content: space-between; }
   .adjust-line strong { color: var(--brown); }
+  /* Shipping row inside a vendor section */
+  .ship-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 12px 16px; background: var(--bg-secondary);
+    border-top: 1px dashed var(--border-tertiary);
+  }
+  .ship-main { min-width: 0; }
+  .ship-label { font-size: 13px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.4px; }
+  .ship-val { font-size: 15px; font-weight: 700; color: var(--brown); margin-top: 2px; }
+  .ship-val.ship-none { color: var(--text-tertiary); font-weight: 600; font-style: italic; }
+  .ship-btn {
+    background: white; border: 1px solid var(--cross); color: var(--cross);
+    padding: 8px 12px; border-radius: 8px; font-size: 12px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.4px; cursor: pointer; font-family: inherit; flex-shrink: 0;
+  }
+  /* Bottom order summary — reads as the final calculation */
+  .order-summary {
+    background: var(--bg-primary); border: 1px solid var(--cross);
+    border-radius: 12px; padding: 16px; margin-top: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+  .order-summary-title {
+    font-size: 12px; color: var(--text-tertiary); text-transform: uppercase;
+    letter-spacing: 0.8px; font-weight: 700; margin-bottom: 10px;
+  }
+  .sum-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 6px 0; font-size: 15px; color: var(--text-secondary); }
+  .sum-line .sum-amt { font-weight: 700; color: var(--text-primary); }
+  .sum-amt.sum-none { color: var(--text-tertiary); font-weight: 600; font-style: italic; }
+  .sum-total-row {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+    margin-top: 8px; padding-top: 10px; border-top: 2px solid var(--cross);
+    font-size: 16px; font-weight: 700; color: var(--brown);
+  }
+  .sum-total { font-size: 24px; font-weight: 800; }
+  .sum-pending { font-size: 13px; color: #92400e; margin-top: 8px; line-height: 1.4; }
+  .sum-pending strong { color: var(--brown); }
+  .sum-unknown { font-size: 12px; color: #92400e; margin-top: 6px; }
+  .order-tax-note { font-size: 11px; color: var(--text-tertiary); margin-top: 8px; letter-spacing: 0.3px; }
   `;
 }
 
@@ -1185,45 +1237,33 @@ async function shanePage(env) {
   const totalCount = flags.length;
   const activeCount = flags.filter(f => !f.bought_by).length;
 
-  // ── Trip subtotal card (sits directly beneath the active-item count) ──
-  const subtotalCard = totalCount === 0 ? '' : `
-    <div class="trip-card" id="trip-card">
-      <div class="trip-row">
-        <div>
-          <div class="trip-label">Estimated subtotal</div>
-          <div class="trip-total" id="trip-total">${tripHasAny ? fmtMoney(tripCents, tripExact) : '—'}</div>
-          <div class="trip-sub" id="trip-flags">Before shipping · <span id="tax-state">Tax exempt</span></div>
-          <div class="trip-unknown" id="trip-unknown" style="${unknownCount ? '' : 'display:none'}">Plus <span id="unknown-count">${unknownCount}</span> item${unknownCount === 1 ? '' : 's'} without an estimate</div>
-        </div>
-        <button type="button" class="adjust-btn" id="open-adjust-hint" title="Adjust estimates inline">Adjust</button>
-      </div>
-      <div class="trip-tax-toggle">
-        <label><input type="checkbox" id="tax-toggle"> Apply sales tax (7%) for this trip</label>
-        <span id="tax-line" style="display:none"></span>
-      </div>
-      <button type="button" class="store-toggle" id="store-toggle">▸ Store subtotals</button>
-      <div id="store-subtotals" class="store-subtotals" style="display:none">${renderStoreSubtotals(storeAgg)}</div>
-      ${byVendor['Webstaurant'] && byVendor['Webstaurant'].some(f => !f.bought_by) ? `<div class="trip-shipping">Webstaurant shipping: not yet known — added at checkout</div>` : ''}
-    </div>`;
+  // Editable per-vendor shipping + order-total roll-up (shipping folded in).
+  const shipMap = await loadShippingEstimates(env);
+  const activeShippingVendors = SHIPPING_VENDORS.filter(v => (byVendor[v] || []).some(f => !f.bought_by));
+  const summary = computeOrderSummary(tripCents, tripExact, activeShippingVendors, shipMap);
 
+  // ── Top: overview only (item count, vendors, instructions, receipts link) ──
   const banner = totalCount === 0
     ? `<div style="background:#d1fae5;color:#065f46;padding:18px;border-radius:10px;margin-bottom:14px;font-size:15px;text-align:center">
          <strong>All clear.</strong> No items flagged from any team right now.
        </div>`
     : `<div style="background:#faf3e6;border:1px solid ${COLORS.equip};border-radius:10px;padding:14px;margin-bottom:12px;font-size:14px;color:#5a3220">
          <strong id="active-count-line">${activeCount} item${activeCount === 1 ? '' : 's'}</strong> to buy across ${Object.keys(byVendor).length} vendor${Object.keys(byVendor).length === 1 ? '' : 's'}.
-         Tap a price to adjust it, or the green checkbox as you buy.
+         Tap a price to adjust it, or the green checkbox as you buy. The estimated total is at the bottom.
        </div>`;
 
+  // Vendor sections; shipping-capable vendors get an editable shipping row.
   const renderVendor = (key, color, textColor, tag, items) => {
     const rows = items.map(f => shopRow(f, pricing)).join('');
+    const ship = (SHIPPING_VENDORS.includes(key) && items.some(f => !f.bought_by))
+      ? shippingRow(key, shipMap[key]) : '';
     return `
       <div class="vendor-card">
         <div class="vendor-header" style="background:${color};color:${textColor}">
           <span class="vendor-name">${escapeHtml(key)}</span>
           <span class="vendor-meta">${escapeHtml(tag ? tag + ' · ' : '')}${items.length}</span>
         </div>
-        <div>${rows}</div>
+        <div>${rows}${ship}</div>
       </div>`;
   };
 
@@ -1237,26 +1277,76 @@ async function shanePage(env) {
   const otherBlock = Object.keys(byVendor).filter(v => !knownVendors.has(v))
     .map(v => renderVendor(v || 'Unknown', COLORS.textTertiary, 'white', '', byVendor[v])).join('');
 
+  // ── Bottom: the complete cost calculation (the conclusion of the list) ──
+  const summaryCard = totalCount === 0 ? '' : renderOrderSummary(summary, storeAgg, unknownCount, shipMap, activeShippingVendors);
+
   const body = `
     <div class="page">
       <div class="page-header">
         <div class="page-tag">Shane · Shopping Review</div>
-        <p class="page-sub">Estimated cost, grouped by vendor. <a href="/receipts" style="color:${COLORS.cross};font-weight:700;text-decoration:none">Receipt matches →</a></p>
+        <p class="page-sub">Products first · complete total at the bottom. <a href="/receipts" style="color:${COLORS.cross};font-weight:700;text-decoration:none">Receipt matches →</a></p>
       </div>
       ${banner}
-      ${subtotalCard}
       ${vendorBlocks}
       ${otherBlock}
-      <p style="text-align:center;color:${COLORS.textTertiary};font-size:13px;margin-top:24px">
-        Tap a price line to adjust the estimate. Tap the green checkbox when bought — you can record the actual price.
+      ${summaryCard}
+      <p style="text-align:center;color:${COLORS.textTertiary};font-size:13px;margin-top:20px">
+        Tap a price line to adjust an estimate. Tap the green checkbox when bought — you can record the actual price.
       </p>
     </div>
     ${boughtModalHtml()}
     ${adjustModalHtml()}
+    ${shippingModalHtml()}
     <script>${pricingClientLib()}</script>
     ${shopScript()}
   `;
   return pageShell('Shopping Review', 'shane', body, '/shane');
+}
+
+// Editable shipping row inside a shipping-capable vendor section.
+function shippingRow(store, cents) {
+  const has = cents != null;
+  return `
+    <div class="ship-row" data-ship-store="${escapeHtml(store)}" data-ship-cents="${has ? cents : ''}">
+      <div class="ship-main">
+        <div class="ship-label">${escapeHtml(store)} shipping</div>
+        <div class="ship-val${has ? '' : ' ship-none'}">${has ? fmtMoney(cents, true) : 'Not entered'}</div>
+      </div>
+      <button type="button" class="ship-btn" data-ship-edit="${escapeHtml(store)}">${has ? 'Edit' : 'Add estimate'}</button>
+    </div>`;
+}
+
+// Bottom financial summary: items subtotal → shipping → complete order total.
+function renderOrderSummary(summary, storeAgg, unknownCount, shipMap, activeShippingVendors) {
+  const lines = [];
+  lines.push(`<div class="sum-line"><span>Items subtotal</span><span class="sum-amt" id="sum-items">${summary.itemsCents ? fmtMoney(summary.itemsCents, summary.exact) : '—'}</span></div>`);
+
+  if (activeShippingVendors.includes('Webstaurant')) {
+    const c = shipMap['Webstaurant'];
+    lines.push(`<div class="sum-line"><span>Webstaurant shipping</span><span class="sum-amt${c == null ? ' sum-none' : ''}" id="sum-ws-ship">${c == null ? 'Not entered' : fmtMoney(c, true)}</span></div>`);
+  }
+  let otherKnown = 0, otherHas = false;
+  for (const v of activeShippingVendors) { if (v !== 'Webstaurant' && shipMap[v] != null) { otherKnown += shipMap[v]; otherHas = true; } }
+  lines.push(`<div class="sum-line" id="sum-other-wrap" style="${otherHas ? '' : 'display:none'}"><span>Other known shipping</span><span class="sum-amt" id="sum-other-ship">${otherHas ? fmtMoney(otherKnown, true) : ''}</span></div>`);
+
+  const totalDisplay = summary.pending ? 'Pending' : ((summary.itemsCents || summary.knownShipping) ? fmtMoney(summary.total, summary.exact) : '—');
+  const totalRow = `<div class="sum-total-row"><span>Estimated order total</span><span class="sum-total" id="sum-total">${totalDisplay}</span></div>`;
+  const pendingNote = `<div class="sum-pending" id="sum-pending" style="${summary.pending ? '' : 'display:none'}">
+      Known item subtotal <strong id="sum-known">${fmtMoney(summary.total, summary.exact)}</strong> · <span id="sum-pending-msg">final estimate pending ${escapeHtml(summary.missing.join(' & '))} shipping</span>
+    </div>`;
+  const unknownNote = `<div class="sum-unknown" id="sum-unknown" style="${unknownCount ? '' : 'display:none'}">Plus <span id="unknown-count">${unknownCount}</span> item${unknownCount === 1 ? '' : 's'} without an estimate — not in the total yet.</div>`;
+
+  return `
+    <div class="order-summary" id="order-summary">
+      <div class="order-summary-title">Estimated order</div>
+      ${lines.join('')}
+      ${totalRow}
+      ${pendingNote}
+      ${unknownNote}
+      <div class="order-tax-note">Tax-exempt — no sales tax added.</div>
+      <button type="button" class="store-toggle" id="store-toggle">▸ Per-store subtotals</button>
+      <div id="store-subtotals" class="store-subtotals" style="display:none">${renderStoreSubtotals(storeAgg)}</div>
+    </div>`;
 }
 
 function renderStoreSubtotals(storeAgg) {
@@ -1453,6 +1543,26 @@ function adjustModalHtml() {
   `;
 }
 
+function shippingModalHtml() {
+  return `
+    <div id="ship-modal" class="modal-backdrop" role="dialog" aria-hidden="true">
+      <div class="modal">
+        <h3 id="ship-title" class="modal-title">Shipping estimate</h3>
+        <p class="modal-sub" id="ship-sub">Shipping is part of the real cost — enter it so the order total is complete.</p>
+        <label class="modal-field-label">Shipping cost ($)</label>
+        <input type="number" id="ship-input" inputmode="decimal" step="0.01" min="0" placeholder="e.g. 89.00">
+        <div class="modal-actions">
+          <button type="button" class="btn-primary" id="ship-save">Save shipping</button>
+          <button type="button" class="btn-danger" id="ship-clear">Clear</button>
+        </div>
+        <div class="modal-actions" style="margin-top:8px">
+          <button type="button" class="btn-secondary" id="ship-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function addItemModalHtml() {
   return `
     <div id="add-modal" class="modal-backdrop" role="dialog" aria-hidden="true">
@@ -1643,10 +1753,9 @@ function shopScript() {
           return unit + 's';
         }
 
-        // ── Live subtotal recompute (include/exclude + trip-only adjustments) ──
-        const taxToggle = document.getElementById('tax-toggle');
+        // ── Live recompute of the bottom order summary (items + shipping) ──
         function recompute() {
-          let cents = 0, exact = true, hasAny = false, unknown = 0, active = 0;
+          let items = 0, exact = true, unknown = 0, active = 0;
           const stores = {};
           document.querySelectorAll('.shop-row').forEach(row => {
             if (row.getAttribute('data-bought') === '1') return;
@@ -1659,47 +1768,108 @@ function shopScript() {
             if (!Number.isFinite(lc)) { unknown++; return; }
             const isExact = row.getAttribute('data-exact') === '1';
             const store = row.getAttribute('data-store') || 'Other';
-            cents += lc; hasAny = true; if (!isExact) exact = false;
+            items += lc; if (!isExact) exact = false;
             stores[store] = stores[store] || { cents: 0, exact: true };
             stores[store].cents += lc; if (!isExact) stores[store].exact = false;
           });
-          const totalEl = document.getElementById('trip-total');
-          if (totalEl) totalEl.textContent = hasAny ? window.TSCost.fmt(cents, exact) : '—';
-          const acl = document.getElementById('active-count-line');
-          if (acl) acl.textContent = active + ' item' + (active === 1 ? '' : 's');
-          const uw = document.getElementById('trip-unknown');
-          if (uw) {
-            document.getElementById('unknown-count').textContent = unknown;
-            uw.style.display = unknown ? '' : 'none';
-            uw.childNodes[uw.childNodes.length - 1].textContent = ' item' + (unknown === 1 ? '' : 's') + ' without an estimate';
+
+          // Shipping from the per-vendor ship rows (present only for active shipping vendors).
+          let knownShip = 0, wsCents = null, otherKnown = 0, otherHas = false;
+          const missing = [];
+          document.querySelectorAll('[data-ship-store]').forEach(el => {
+            const store = el.getAttribute('data-ship-store');
+            const raw = el.getAttribute('data-ship-cents');
+            const c = (raw === '' || raw == null) ? null : parseInt(raw, 10);
+            if (c == null) missing.push(store); else knownShip += c;
+            if (store === 'Webstaurant') wsCents = c;
+            else if (c != null) { otherKnown += c; otherHas = true; }
+          });
+          const pending = missing.length > 0;
+          const total = items + knownShip;
+
+          const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+          set('active-count-line', active + ' item' + (active === 1 ? '' : 's'));
+          set('sum-items', items ? window.TSCost.fmt(items, exact) : '—');
+          const wsEl = document.getElementById('sum-ws-ship');
+          if (wsEl) { wsEl.textContent = wsCents == null ? 'Not entered' : window.TSCost.fmt(wsCents, true); wsEl.classList.toggle('sum-none', wsCents == null); }
+          const ow = document.getElementById('sum-other-wrap');
+          if (ow) { ow.style.display = otherHas ? '' : 'none'; set('sum-other-ship', otherHas ? window.TSCost.fmt(otherKnown, true) : ''); }
+          set('sum-total', pending ? 'Pending' : ((items || knownShip) ? window.TSCost.fmt(total, exact) : '—'));
+          const pd = document.getElementById('sum-pending');
+          if (pd) {
+            pd.style.display = pending ? '' : 'none';
+            if (pending) { set('sum-known', window.TSCost.fmt(total, exact)); set('sum-pending-msg', 'final estimate pending ' + missing.join(' & ') + ' shipping'); }
           }
-          // Store subtotals
+          const uw = document.getElementById('sum-unknown');
+          if (uw) { uw.style.display = unknown ? '' : 'none'; set('unknown-count', String(unknown)); }
+
+          // Per-store subtotals
           const order = ['Amazon','Webstaurant','Publix',"Sam's Club","BJ's",'Flexible','Restaurant Depot','Confirm'];
           const keys = Object.keys(stores).sort((a,b) => (order.indexOf(a)+1||99) - (order.indexOf(b)+1||99));
           const ss = document.getElementById('store-subtotals');
           if (ss) ss.innerHTML = keys.length ? keys.map(k =>
             '<div class="store-line"><span>' + k + '</span><span class="store-amt">' + window.TSCost.fmt(stores[k].cents, stores[k].exact) + '</span></div>'
           ).join('') : '<div class="store-line">No estimated items yet.</div>';
-          // Tax line
-          const taxLine = document.getElementById('tax-line');
-          const taxState = document.getElementById('tax-state');
-          if (taxToggle && taxToggle.checked) {
-            const tax = Math.round(cents * 0.07);
-            if (taxState) taxState.textContent = 'Tax applied';
-            if (taxLine) { taxLine.style.display = ''; taxLine.textContent = '+ tax ' + window.TSCost.fmt(tax, exact) + ' = ' + window.TSCost.fmt(cents + tax, exact); }
-          } else {
-            if (taxState) taxState.textContent = 'Tax exempt';
-            if (taxLine) taxLine.style.display = 'none';
-          }
         }
-        if (taxToggle) taxToggle.addEventListener('change', recompute);
         const storeBtn = document.getElementById('store-toggle');
         if (storeBtn) storeBtn.addEventListener('click', () => {
           const ss = document.getElementById('store-subtotals');
           const open = ss.style.display !== 'none';
           ss.style.display = open ? 'none' : 'block';
-          storeBtn.textContent = (open ? '▸' : '▾') + ' Store subtotals';
+          storeBtn.textContent = (open ? '▸' : '▾') + ' Per-store subtotals';
         });
+
+        // ── Shipping estimate editor ──
+        const shipModal = document.getElementById('ship-modal');
+        const shipInput = document.getElementById('ship-input');
+        const shipTitle = document.getElementById('ship-title');
+        let shipStore = null;
+        function shipRowFor(store) {
+          const sel = (window.CSS && CSS.escape) ? CSS.escape(store) : store.replace(/"/g, '\\\\"');
+          return document.querySelector('[data-ship-store="' + sel + '"]');
+        }
+        function openShip(store) {
+          shipStore = store;
+          if (shipTitle) shipTitle.textContent = store + ' shipping';
+          const row = shipRowFor(store);
+          const raw = row ? row.getAttribute('data-ship-cents') : '';
+          shipInput.value = (raw === '' || raw == null) ? '' : (parseInt(raw, 10) / 100).toFixed(2);
+          shipModal.classList.add('show');
+          setTimeout(() => shipInput.focus(), 80);
+        }
+        async function saveShip(cents) {
+          try {
+            const r = await fetch('/api/shipping/save', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ store: shipStore, cents: cents })
+            });
+            if (!r.ok) { toast('Could not save shipping.', true); return; }
+            const row = shipRowFor(shipStore);
+            if (row) {
+              row.setAttribute('data-ship-cents', cents == null ? '' : cents);
+              const val = row.querySelector('.ship-val');
+              const btn = row.querySelector('.ship-btn');
+              if (val) { val.textContent = cents == null ? 'Not entered' : window.TSCost.fmt(cents, true); val.classList.toggle('ship-none', cents == null); }
+              if (btn) btn.textContent = cents == null ? 'Add estimate' : 'Edit';
+            }
+            shipModal.classList.remove('show');
+            toast(cents == null ? '✓ Shipping cleared' : '✓ Shipping saved');
+            recompute();
+          } catch (e) { toast('Network issue.', true); }
+        }
+        document.querySelectorAll('[data-ship-edit]').forEach(btn => {
+          btn.addEventListener('click', () => openShip(btn.getAttribute('data-ship-edit')));
+        });
+        if (shipModal) {
+          document.getElementById('ship-save').addEventListener('click', () => {
+            const dollars = parseFloat(shipInput.value);
+            if (!Number.isFinite(dollars) || dollars < 0) { toast('Enter a shipping amount.', true); return; }
+            saveShip(Math.round(dollars * 100));
+          });
+          document.getElementById('ship-clear').addEventListener('click', () => saveShip(null));
+          document.getElementById('ship-cancel').addEventListener('click', () => shipModal.classList.remove('show'));
+          shipModal.addEventListener('click', (e) => { if (e.target === shipModal) shipModal.classList.remove('show'); });
+        }
 
         // ── Price detail expand / collapse ──
         document.querySelectorAll('[data-toggle-detail]').forEach(el => {
@@ -2117,6 +2287,8 @@ async function logPage(env) {
     price_saved:   { label: 'Price set',   color: '#3730a3', bg: '#e0e7ff' },
     price_lock:    { label: 'Price lock',  color: '#3730a3', bg: '#e0e7ff' },
     price_actual_recorded: { label: 'Actual price', color: '#065f46', bg: '#d1fae5' },
+    shipping_saved: { label: 'Shipping set', color: '#3730a3', bg: '#e0e7ff' },
+    shipping_cleared: { label: 'Shipping cleared', color: '#5f5e5a', bg: '#f5f2ea' },
     receipt_ingested: { label: 'Receipt in', color: '#854f0b', bg: '#fde68a' },
     receipt_match_confirmed: { label: 'Match ✓', color: '#065f46', bg: '#d1fae5' },
     receipt_match_ignored: { label: 'Match ignored', color: '#5f5e5a', bg: '#f5f2ea' },
@@ -2298,6 +2470,14 @@ async function ensurePricingSchema(env) {
       vendor TEXT,
       alias_text TEXT NOT NULL,      -- normalized receipt text
       created_at TEXT DEFAULT (datetime('now'))
+    )`,
+    // Editable per-vendor shipping estimate (Webstaurant is the deciding one).
+    // Smallest additive store: one row per store, cleared by deleting the row.
+    `CREATE TABLE IF NOT EXISTS shipping_estimates (
+      store TEXT PRIMARY KEY,
+      cents INTEGER,
+      note TEXT,
+      updated_at TEXT DEFAULT (datetime('now'))
     )`,
     `CREATE TABLE IF NOT EXISTS pricing_meta (key TEXT PRIMARY KEY, val TEXT)`,
     `CREATE INDEX IF NOT EXISTS idx_prices_item ON item_prices(item_id)`,
@@ -2495,6 +2675,35 @@ function computeLine(est, qty, store, tiers) {
   return { hasEstimate: true, lineCents: Math.round(unitCents * q), isExact: est.isExact, tierApplied, unitCents };
 }
 
+// Vendors where shipping is a real cost that must be entered, not assumed $0.
+const SHIPPING_VENDORS = ['Webstaurant', 'Amazon'];
+
+async function loadShippingEstimates(env) {
+  const res = await env.DB.prepare(`SELECT store, cents FROM shipping_estimates`).all();
+  const map = {};
+  for (const r of (res.results || [])) if (r.cents != null) map[r.store] = r.cents;
+  return map;
+}
+
+// Roll the item subtotal + entered shipping into the order estimate. Unknown
+// shipping for a vendor you're ordering from is NEVER counted as $0 — it makes
+// the order total "pending" and the honest label falls back to the item
+// subtotal ("Known item subtotal ≈ $X · final estimate pending shipping").
+function computeOrderSummary(itemsCents, itemsExact, activeShippingVendors, shipMap) {
+  let knownShipping = 0;
+  const missing = [];
+  for (const v of activeShippingVendors) {
+    if (shipMap[v] != null) knownShipping += shipMap[v];
+    else missing.push(v);
+  }
+  const pending = missing.length > 0;
+  return {
+    itemsCents, knownShipping, missing, pending,
+    total: itemsCents + knownShipping,   // "known so far" when pending, else final
+    exact: itemsExact,
+  };
+}
+
 // Client-side mirror of tierPriceFor/computeLine so totals recalc instantly
 // (include/exclude toggles and the Adjust calculator) with no round-trip.
 function pricingClientLib() {
@@ -2567,6 +2776,32 @@ async function apiPriceSave(request, env) {
     item_name: item.name, store, price_cents: priceCents, is_exact: isExact, source: sourceType
   });
   return json({ ok: true });
+}
+
+// ── API: save / clear a per-vendor shipping estimate (Shane) ──
+async function apiShippingSave(request, env) {
+  await ensurePricingSchema(env);
+  const body = await request.json().catch(() => ({}));
+  const store = (body.store || '').toString().trim();
+  if (!store) return json({ error: 'store_required' }, 400);
+  const note = (body.note || '').toString().trim() || null;
+
+  // Blank / null cents clears the estimate (back to "Not entered").
+  const cents = (body.cents === null || body.cents === '' || body.cents === undefined)
+    ? null : parseInt(body.cents, 10);
+  if (cents !== null && (!Number.isFinite(cents) || cents < 0)) return json({ error: 'bad_cents' }, 400);
+
+  if (cents === null) {
+    await env.DB.prepare(`DELETE FROM shipping_estimates WHERE store = ?`).bind(store).run();
+    await logAction(env, 'shipping_cleared', 'shane', 'store', store, { store });
+    return json({ ok: true, cleared: true });
+  }
+  await env.DB.prepare(
+    `INSERT INTO shipping_estimates (store, cents, note, updated_at) VALUES (?, ?, ?, datetime('now'))
+     ON CONFLICT(store) DO UPDATE SET cents = excluded.cents, note = excluded.note, updated_at = datetime('now')`
+  ).bind(store, cents, note).run();
+  await logAction(env, 'shipping_saved', 'shane', 'store', store, { store, cents });
+  return json({ ok: true, cents });
 }
 
 // ── Receipt matching: try to map a raw receipt line to a canonical item ──
@@ -2882,4 +3117,5 @@ export {
   resolveItemEstimate, computeLine, tierPriceFor, weightedAvg,
   fmtMoney, normDesc, normStore, pricingClientLib,
   matchReceiptLine, apiReceiptIngest, apiReceiptMatch, apiPriceSave, apiResolve,
+  computeOrderSummary, loadShippingEstimates, apiShippingSave, SHIPPING_VENDORS,
 };
