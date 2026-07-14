@@ -25,11 +25,14 @@
 //     exact prices vs round estimates are visually distinct.
 //   - "Adjust estimate" calculator (use-for-trip or save) and a
 //     price-detail panel (source, store prices, history, lock).
-//   - TabReady feedback loop: POST /api/receipt-ingest matches
-//     receipt lines to canonical items (confirmed / likely /
-//     needs-review), stores item-level purchase history without
-//     ever rewriting finalized receipts, learns vendor aliases,
-//     and lets confirmed actuals improve future estimates.
+//   - TabReady feedback loop: POST /api/receipt-ingest (fail-closed,
+//     requires the RECEIPT_INGEST_TOKEN secret) matches receipt
+//     lines to canonical items (confirmed / likely / needs-review),
+//     stores item-level purchase history without ever rewriting
+//     finalized receipts, and learns vendor aliases. ONLY confirmed
+//     matches (exact SKU, learned alias, or manual confirmation)
+//     move an estimate; likely + needs-review stay in the review
+//     queue until Shane confirms them.
 //   - New tables only (item_prices, price_tiers, purchase_history,
 //     receipt_aliases, pricing_meta); items/flags/audit_log
 //     untouched. See the SHOPPING COST INTELLIGENCE section below.
@@ -2377,10 +2380,14 @@ async function loadPricingForItems(env, itemIds) {
   const tierRes = await env.DB.prepare(
     `SELECT * FROM price_tiers WHERE item_id IN (${ph}) ORDER BY min_qty DESC`
   ).bind(...ids).all();
+  // Only CONFIRMED actuals (exact SKU, learned alias, or manually confirmed)
+  // drive the preferred estimate. 'likely' matches stay in the /receipts review
+  // queue and never move a price until Shane confirms them — this prevents an
+  // ambiguous receipt abbreviation from poisoning future forecasts.
   const purchRes = await env.DB.prepare(
     `SELECT * FROM purchase_history
      WHERE item_id IN (${ph}) AND item_id IS NOT NULL
-       AND is_outlier = 0 AND match_confidence IN ('confirmed','likely')
+       AND is_outlier = 0 AND match_confidence = 'confirmed'
      ORDER BY purchase_date DESC, created_at DESC`
   ).bind(...ids).all();
 
@@ -2609,11 +2616,16 @@ async function matchReceiptLine(env, vendor, line, itemsCache) {
 //   { receipt_id, vendor, purchase_date, lines: [{ line_id, description, sku, quantity,
 //     package_qty, unit_of_measure, gross_cents, discount_cents, net_cents }] }
 async function apiReceiptIngest(request, env) {
-  // Auth: bearer/x-ingest-token must match the configured secret if one is set.
-  if (env.RECEIPT_INGEST_TOKEN) {
+  // Fail closed. This is a write path into price history, so it stays fully
+  // disabled until a secret is configured AND the caller presents it:
+  //   • no secret configured      → 503 ingest_not_configured
+  //   • missing / wrong token      → 401 unauthorized
+  //   • correct bearer/ingest tok  → continue
+  if (!env.RECEIPT_INGEST_TOKEN) return json({ error: 'ingest_not_configured' }, 503);
+  {
     const auth = request.headers.get('authorization') || '';
-    const tok = request.headers.get('x-ingest-token') || auth.replace(/^Bearer\s+/i, '');
-    if (tok !== env.RECEIPT_INGEST_TOKEN) return json({ error: 'unauthorized' }, 401);
+    const tok = (request.headers.get('x-ingest-token') || auth.replace(/^Bearer\s+/i, '')).trim();
+    if (!tok || tok !== env.RECEIPT_INGEST_TOKEN) return json({ error: 'unauthorized' }, 401);
   }
   await ensurePricingSchema(env);
   const body = await request.json().catch(() => ({}));
@@ -2859,3 +2871,15 @@ function receiptReviewScript() {
     })();
   `;
 }
+// ────────────────────────────────────────────────────────────
+// Named exports for tests. The Workers runtime only uses the
+// `export default` above; these extra named exports are inert at
+// deploy time and let the committed test suite import the pure
+// pricing + receipt functions directly (see ./test).
+// ────────────────────────────────────────────────────────────
+export {
+  ensurePricingSchema, seedPricing, loadPricingForItems,
+  resolveItemEstimate, computeLine, tierPriceFor, weightedAvg,
+  fmtMoney, normDesc, normStore, pricingClientLib,
+  matchReceiptLine, apiReceiptIngest, apiReceiptMatch, apiPriceSave, apiResolve,
+};
