@@ -1358,7 +1358,7 @@ function shopRowDetail(f, pricing) {
   if (purchases.length) {
     rows.push(`<div class="pd-head">Recent purchases</div>`);
     for (const p of purchases.slice(0, 5)) {
-      rows.push(`<div class="pd-row"><span>${escapeHtml((p.purchase_date || '').slice(0, 10))} · ${escapeHtml(p.vendor || '')}</span><span>${fmtMoney(p.unit_price_cents, true)}${p.match_confidence === 'likely' ? ' <em>likely</em>' : ''}</span></div>`);
+      rows.push(`<div class="pd-row"><span>${escapeHtml((p.purchase_date || '').slice(0, 10))} · ${escapeHtml(p.vendor || '')}</span><span>${fmtMoney(p.unit_price_cents, true)}</span></div>`);
     }
   } else {
     rows.push(`<div class="pd-row" style="color:${COLORS.textTertiary}"><span>No actual purchases recorded yet</span><span></span></div>`);
@@ -2772,7 +2772,7 @@ async function receiptsReviewPage(env) {
        </div>`
     : `<div style="background:#faf3e6;border:1px solid ${COLORS.equip};border-radius:10px;padding:12px;margin-bottom:14px;font-size:14px;color:#5a3220">
          <strong>${rows.length} receipt line${rows.length === 1 ? '' : 's'} to review.</strong>
-         Likely matches already influence estimates but stay here until you confirm. Needs-review lines do not change any estimate.
+         Likely matches are suggestions only — they do not affect any estimate until you confirm them. Needs-review lines never change an estimate either.
        </div>`;
 
   const cardHtml = rows.map(r => {
