@@ -87,7 +87,15 @@ jobs:
           BINDINGS_JSON=$(curl -s \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/$WORKER/bindings" \
             -H "Authorization: Bearer $CF_API_TOKEN")
-          BINDINGS=$(echo "$BINDINGS_JSON" | jq -c '[.result // [] | .[] | select(.type != "secret_text")]')
+          # Preserve ALL existing bindings across deploys. A script PUT's
+          # bindings array is authoritative — any binding omitted here is
+          # DROPPED. Non-secret bindings (D1/KV/R2/vars) are re-declared as-is;
+          # secret_text bindings are carried forward via `inherit`, which
+          # retains their existing values without ever exposing them to the
+          # workflow. Previously secret_text was filtered out, so every secret
+          # (login codes, and the future RECEIPT_INGEST_TOKEN) was wiped on
+          # each deploy.
+          BINDINGS=$(echo "$BINDINGS_JSON" | jq -c '[.result // [] | .[] | if .type == "secret_text" then {name: .name, type: "inherit"} else . end]')
           echo "Preserving bindings: $BINDINGS"
 
           METADATA=$(printf '{"main_module":"%s","compatibility_date":"2024-09-23","bindings":%s}' "$ENTRY" "$BINDINGS")
@@ -161,7 +169,15 @@ jobs:
           BINDINGS_JSON=$(curl -s \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/$WORKER/bindings" \
             -H "Authorization: Bearer $CF_API_TOKEN")
-          BINDINGS=$(echo "$BINDINGS_JSON" | jq -c '[.result // [] | .[] | select(.type != "secret_text")]')
+          # Preserve ALL existing bindings across deploys. A script PUT's
+          # bindings array is authoritative — any binding omitted here is
+          # DROPPED. Non-secret bindings (D1/KV/R2/vars) are re-declared as-is;
+          # secret_text bindings are carried forward via `inherit`, which
+          # retains their existing values without ever exposing them to the
+          # workflow. Previously secret_text was filtered out, so every secret
+          # (login codes, and the future RECEIPT_INGEST_TOKEN) was wiped on
+          # each deploy.
+          BINDINGS=$(echo "$BINDINGS_JSON" | jq -c '[.result // [] | .[] | if .type == "secret_text" then {name: .name, type: "inherit"} else . end]')
           echo "Preserving bindings: $BINDINGS"
 
           METADATA=$(printf '{"main_module":"%s","compatibility_date":"2024-09-23","bindings":%s}' "$ENTRY" "$BINDINGS")

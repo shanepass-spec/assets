@@ -1,0 +1,10 @@
+{
+  "name": "tab-supplies-worker",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Tabernacle Church supply check + Shopping Cost Intelligence (Cloudflare Worker).",
+  "scripts": {
+    "test": "node --test --no-warnings \"test/*.test.js\""
+  }
+}
