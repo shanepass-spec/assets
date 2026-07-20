@@ -58,7 +58,7 @@ Introduce **one** canonical base-URL source of truth and a small sibling-app map
 `app_settings` rows and/or an `env` var), never repeated inline:
 
 ```
-CANONICAL_BASE_URL   → e.g. https://tabready.thetabsrq.net   (from app_settings 'canonical_base_url', fallback env, fallback request.origin)
+CANONICAL_BASE_URL   → https://tabready.thetabsrq.net   (confirmed hostname; from app_settings 'canonical_base_url', fallback env, fallback request.origin)
 SIBLING_APP_URLS     → { workorders, supplies, receipts, curriculum } (from app_settings JSON)
 ```
 

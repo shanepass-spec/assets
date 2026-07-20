@@ -14,7 +14,7 @@ The design rests on four facts established in Deliverables 1–3:
 
 ## 1. Permanent church-owned domain
 
-- **Proposed:** `tabready.thetabsrq.net` (confirm final host with Shane before implementation — brief §8).
+- **Confirmed hostname:** `https://tabready.thetabsrq.net` (**confirmed by Shane 2026‑07‑20**, brief §8).
 - **Stability contract:** the church domain is the *only* address that appears in **new** QR codes, links, emails,
   printed instructions, and docs. Workers, databases, maintainers, and even the Cloudflare account can change
   behind it without changing the public address.

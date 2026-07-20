@@ -32,8 +32,8 @@ verified against the **live `worker.js` (v2.9.276) and the live production datab
    URL changes.
 
 7. **The church domain is already half-ready.** `thetabsrq.net` is **already a verified email sending domain**
-   (`tabready@thetabsrq.net`). What's missing is the **web** route `tabready.thetabsrq.net` (proposed — you must
-   confirm the final host) and a Custom Domain on the Worker.
+   (`tabready@thetabsrq.net`). The permanent public address is **`https://tabready.thetabsrq.net`** (**confirmed by
+   Shane 2026‑07‑20**). What's missing is the **web** route for it — a Custom Domain on the Worker.
 
 8. **Home-screen installs are genuine PWAs, and favorable for migration.** No stale cached shell is pinned to the
    old host; only the installed icon's `start_url` points at the old host — which is exactly why the **old Worker

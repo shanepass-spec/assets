@@ -80,7 +80,7 @@ TabReady uses **no KV** (confirmed: no `env.<KV>` references; personal KV namesp
 ## 5. Routes / Custom Domains
 
 - Current public host: **`tabready.shanepass.workers.dev`** (personal `workers.dev`). Confirmed as the base used in digest emails (`DIGEST_BASE`).
-- **No custom domain is wired to TabReady yet.** The permanent church host `tabready.thetabsrq.net` (brief's proposal) is **not yet a Cloudflare route** — it must be created (DNS + Worker custom domain) in the account that will serve production. *The exact final hostname must still be confirmed by Shane (brief §8).*
+- **No custom domain is wired to TabReady yet.** The permanent church host is **`https://tabready.thetabsrq.net`** — **confirmed by Shane 2026‑07‑20**. It is **not yet a Cloudflare route** and must be created (DNS + Worker custom domain) in the account that will serve production, at cutover.
 - Church email domain `thetabsrq.net` is **already verified for Resend sending** (`RESEND_FROM_ADDRESS`, `worker.js:896`) — but a **web** route for `tabready.thetabsrq.net` is separate and does not exist yet.
 
 ## 6. Scheduled Jobs (cron)

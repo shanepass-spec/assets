@@ -17,7 +17,7 @@ Every checkbox below exists to prove that statement true.
 ---
 
 ## A. Domain & configuration
-- [ ] Final church hostname **confirmed by Shane** (e.g. `tabready.thetabsrq.net`).
+- [x] Final church hostname **confirmed by Shane** — `https://tabready.thetabsrq.net` (recorded 2026‑07‑20).
 - [ ] Custom Domain wired to the **Media** production Worker; SSL valid.
 - [ ] `CANONICAL_BASE_URL` set to the church host; digest email verified to use it (G12).
 - [ ] No public link/QR/email/print contains personal Worker name, `workers.dev`, account/D1/Worker IDs, or preview host.

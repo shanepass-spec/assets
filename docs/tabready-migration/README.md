@@ -23,6 +23,20 @@ Cloudflare, D1, or `worker.js` has been modified. Every finding below was verifi
 | 7 | [`07-risk-register.md`](./07-risk-register.md) | Risk · likelihood · impact · mitigation · rollback · owner. |
 | 8 | [`08-go-no-go-checklist.md`](./08-go-no-go-checklist.md) | The gate Shane signs before any cutover. |
 
+## Decision log & authorization status
+
+| Date | Decision / gate | Status |
+|------|-----------------|--------|
+| 2026‑07‑20 | **Permanent public hostname** = `https://tabready.thetabsrq.net` | ✅ **Confirmed by Shane** (documentation only) |
+| — | Documentation update recording the hostname | ✅ **Approved** |
+| — | **Code changes** (incl. the `CANONICAL_BASE_URL` config plumbing) | ⛔ **Not approved — on hold** |
+| — | **Cloudflare / DNS / D1 / route / secret / deployment changes** | ⛔ **Not approved** |
+| — | **Next gate:** Scout completes the security + migration review and records the approved sequence in **Relay** | ⏳ Pending |
+| — | **First investigation after Scout's review:** reconcile the migration prep already present in the Media account + production DB (what is current, abandoned, or in‑progress) **before** Builder changes code or starts another migration path | ⏳ Queued (post‑review) |
+
+> Recording the hostname locks the address as planning documentation; it does **not** authorize any implementation.
+> No code, Cloudflare, DNS, D1, route, secret, or deployment change proceeds until Scout's review is recorded in Relay.
+
 ## Ground rules honored in this package
 
 - **Discovery before change.** No Cloudflare/D1 mutations were performed. Read-only queries only.
