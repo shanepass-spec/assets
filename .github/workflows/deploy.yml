@@ -42,6 +42,11 @@ jobs:
               | sort -u \
               | jq -R -s -c 'split("\n")[:-1]')
           fi
+          # SAFETY: tabready is deployed ONLY via the manual, gated workflow
+          # tabready-v2.9.290-gated-deploy.yml (hash-verified candidate, staged,
+          # auto-rollback). It must NEVER auto-deploy from a push — otherwise a
+          # merge could overwrite live production with whatever worker.js is on main.
+          WORKERS=$(echo "$WORKERS" | jq -c 'map(select(. != "tabready"))')
           echo "Deploying: $WORKERS"
           echo "matrix=$WORKERS" >> $GITHUB_OUTPUT
 
@@ -64,6 +69,13 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           WORKER="${{ matrix.worker }}"
+
+          # SAFETY GUARD: tabready is deployed only via the gated workflow.
+          if [ "$WORKER" = "tabready" ]; then
+            echo "⛔ tabready must deploy via tabready-v2.9.290-gated-deploy.yml — refusing auto-deploy."
+            exit 0
+          fi
+
           DIR="workers/$WORKER"
 
           if [ ! -d "$DIR" ]; then
