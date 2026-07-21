@@ -59,6 +59,28 @@ jobs:
       - name: Install pinned wrangler
         run: npm i -g "wrangler@${WRANGLER_VERSION}"
 
+      - name: Fail-closed D1 binding preflight (verify live IDs == wrangler.toml)
+        run: |
+          set -euo pipefail
+          # Runs BEFORE any D1 export, schema command, Worker upload, or traffic
+          # change. Resolves each D1 binding's live database by exact name, requires
+          # exactly one match, and aborts if the live id differs from wrangler.toml.
+          # Prints only names + ids — never secrets or data.
+          LIST=$(wrangler d1 list --json)
+          toml_id() { grep -A3 "binding = \"$1\"" "$CONFIG" | grep -m1 database_id | grep -oE '[0-9a-f-]{36}'; }
+          verify() {
+            NAME="$1"; TOML_ID="$2"
+            [ -n "$TOML_ID" ] || { echo "::error::no database_id for $NAME in wrangler.toml"; exit 1; }
+            COUNT=$(echo "$LIST" | jq --arg n "$NAME" '[.[]|select(.name==$n)]|length')
+            [ "$COUNT" = "1" ] || { echo "::error::expected exactly 1 live D1 named '$NAME', found $COUNT"; exit 1; }
+            LIVE_ID=$(echo "$LIST" | jq -r --arg n "$NAME" '.[]|select(.name==$n)|.uuid')
+            echo "D1 '$NAME': live=$LIVE_ID  wrangler.toml=$TOML_ID"
+            [ "$LIVE_ID" = "$TOML_ID" ] || { echo "::error::'$NAME' database_id MISMATCH — aborting before any change"; exit 1; }
+          }
+          verify "tabready"            "$(toml_id DB)"
+          verify "tab-website-content" "$(toml_id CONTENT_DB)"
+          echo "D1 binding preflight OK — verified ids will be used for backup and schema."
+
       - name: Confirm operator intent + candidate hash gate
         run: |
           set -euo pipefail
