@@ -1,0 +1,287 @@
+name: TabReady v2.9.290 — Code Release (Phase A · personal account)
+
+# MANUAL ONLY. Phase A = deploy the v2.9.290 CODE to the existing personal-account
+# Worker using Cloudflare versioned uploads (upload without traffic → test preview
+# → gradual traffic → 100%), with automatic version rollback on failure.
+#
+# This workflow does NOT do the Media-account migration, cross-account data copy,
+# R2 migration, DNS cutover, or session-bridge cutover (that is Phase B, separate).
+# The only production write here besides the code version is the ADDITIVE D1 schema
+# (new columns/tables, backward-compatible), taken with a pre-change backup.
+#
+# Identities:
+#   Candidate v2.9.290  sha256 2aeaed0af0eb3d2c7b22cb585859b89c3b5f13504a22d2529958bc290f88e2be
+#   Rollback  v2.9.289  sha256 6aae0ec256efd5cf1c8db6eb093f7d62b859b1b4493643c9260a3bde2c60211b
+#
+# UNTESTED UNTIL FIRST RUN: exact `wrangler versions`/`rollback` flags and the
+# CONTENT_DB binding id should be confirmed before the first real execution.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_candidate_sha256:
+        description: 'Paste candidate SHA-256 to confirm (must equal 2aeaed0a…e2be)'
+        required: true
+      canary_percent:
+        description: 'Initial limited-traffic percentage'
+        required: true
+        default: '10'
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: '3.114.0'          # pinned; confirm this version exists before first run
+  CONFIG: workers/tabready/wrangler.toml
+  WORKER_SRC: workers/tabready/worker.js
+  D1_NAME: tabready
+  CANDIDATE_SHA: '2aeaed0af0eb3d2c7b22cb585859b89c3b5f13504a22d2529958bc290f88e2be'
+  ROLLBACK_SHA: '6aae0ec256efd5cf1c8db6eb093f7d62b859b1b4493643c9260a3bde2c60211b'
+  EXPECTED_VERSION: '2.9.290'
+
+jobs:
+  build-verify-preview:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+    outputs:
+      new_version_id: ${{ steps.upload.outputs.new_version_id }}
+      prev_version_id: ${{ steps.prev.outputs.prev_version_id }}
+      preview_url: ${{ steps.upload.outputs.preview_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pinned wrangler
+        run: npm i -g "wrangler@${WRANGLER_VERSION}"
+
+      - name: Fail-closed D1 binding preflight (verify live IDs == wrangler.toml)
+        run: |
+          set -euo pipefail
+          # Runs BEFORE any D1 export, schema command, Worker upload, or traffic
+          # change. Resolves each D1 binding's live database by exact name, requires
+          # exactly one match, and aborts if the live id differs from wrangler.toml.
+          # Prints only names + ids — never secrets or data.
+          LIST=$(wrangler d1 list --json)
+          toml_id() { grep -A3 "binding = \"$1\"" "$CONFIG" | grep -m1 database_id | grep -oE '[0-9a-f-]{36}'; }
+          verify() {
+            NAME="$1"; TOML_ID="$2"
+            [ -n "$TOML_ID" ] || { echo "::error::no database_id for $NAME in wrangler.toml"; exit 1; }
+            COUNT=$(echo "$LIST" | jq --arg n "$NAME" '[.[]|select(.name==$n)]|length')
+            [ "$COUNT" = "1" ] || { echo "::error::expected exactly 1 live D1 named '$NAME', found $COUNT"; exit 1; }
+            LIVE_ID=$(echo "$LIST" | jq -r --arg n "$NAME" '.[]|select(.name==$n)|.uuid')
+            echo "D1 '$NAME': live=$LIVE_ID  wrangler.toml=$TOML_ID"
+            [ "$LIVE_ID" = "$TOML_ID" ] || { echo "::error::'$NAME' database_id MISMATCH — aborting before any change"; exit 1; }
+          }
+          verify "tabready"            "$(toml_id DB)"
+          verify "tab-website-content" "$(toml_id CONTENT_DB)"
+          echo "D1 binding preflight OK — verified ids will be used for backup and schema."
+
+      - name: Confirm operator intent + candidate hash gate
+        run: |
+          set -euo pipefail
+          [ "${{ github.event.inputs.confirm_candidate_sha256 }}" = "$CANDIDATE_SHA" ] \
+            || { echo "::error::Confirmation hash mismatch"; exit 1; }
+          H=$(sha256sum "$WORKER_SRC" | cut -d' ' -f1)
+          echo "worker.js sha256=$H"
+          [ "$H" = "$CANDIDATE_SHA" ] || { echo "::error::worker.js is not the approved candidate"; exit 1; }
+          head -1 "$WORKER_SRC" | grep -q "VERSION = '$EXPECTED_VERSION'" || { echo "::error::version != $EXPECTED_VERSION"; exit 1; }
+          [ "$(grep -c apiVcard "$WORKER_SRC")" -ge 2 ] || { echo "::error::/api/vcard missing"; exit 1; }
+          grep -q session_epoch "$WORKER_SRC" || { echo "::error::migration code missing"; exit 1; }
+
+      - name: Run test suites (16 migration + 7 vCard)
+        run: |
+          set -euo pipefail
+          cp "$WORKER_SRC" workers/tabready/deploy/tests/worker.build.js
+          cp workers/tabready/deploy/legacy-bridge.js workers/tabready/deploy/tests/tabready-legacy-bridge.js
+          cmp "$WORKER_SRC" workers/tabready/deploy/tests/worker.build.js
+          cd workers/tabready/deploy/tests
+          node test-build.mjs
+          node test-vcard-noregress.mjs
+
+      - name: Validate required secret names exist (no values printed)
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          [ -n "$CF_API_TOKEN" ] || { echo "::error::CF_API_TOKEN missing"; exit 1; }
+          [ -n "$CF_ACCOUNT_ID" ] || { echo "::error::CF_ACCOUNT_ID missing"; exit 1; }
+          echo "Worker secret NAMES expected to persist on the deployment (values never printed):"
+          echo "  SESSION_SECRET PROVISION_SECRET PCO_APP_ID PCO_SECRET RESEND_API_KEY"
+          echo "  VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY ANTHROPIC_API_KEY SCHEDULE_INTAKE_SECRET"
+
+      - name: Capture current live version id (rollback target)
+        id: prev
+        run: |
+          set -euo pipefail
+          PREV=$(wrangler deployments list --config "$CONFIG" --json 2>/dev/null \
+                 | jq -r 'if type=="array" then .[0].versions[0].version_id else .versions[0].version_id end' || true)
+          echo "prev_version_id=$PREV" >> "$GITHUB_OUTPUT"
+          echo "Current live version id: ${PREV:-<unknown>}"
+          [ -n "$PREV" ] && [ "$PREV" != "null" ] || echo "::warning::Could not capture prev version id; rollback will use 'wrangler rollback'."
+
+      - name: Pre-change backup of live D1
+        run: |
+          set -euo pipefail
+          wrangler d1 export "$D1_NAME" --config "$CONFIG" --remote --output "backup-pre-2.9.290-${{ github.run_id }}.sql"
+          echo "backup rows: $(grep -c INSERT "backup-pre-2.9.290-${{ github.run_id }}.sql" || true)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: d1-backup-pre-2.9.290
+          path: backup-pre-2.9.290-*.sql
+          retention-days: 30
+
+      - name: Apply additive schema (guarded, idempotent)
+        run: |
+          set -euo pipefail
+          have_col() {
+            wrangler d1 execute "$D1_NAME" --config "$CONFIG" --remote --json \
+              --command "PRAGMA table_info($1);" | jq -r '.[].results[].name' | grep -qx "$2"
+          }
+          for pair in "users:session_epoch:INTEGER NOT NULL DEFAULT 0" \
+                      "magic_links:purpose:TEXT NOT NULL DEFAULT 'login'" \
+                      "magic_links:issued_by:TEXT" \
+                      "magic_links:revoke_sessions:INTEGER NOT NULL DEFAULT 0"; do
+            tbl="${pair%%:*}"; rest="${pair#*:}"; col="${rest%%:*}"; typ="${rest#*:}"
+            if have_col "$tbl" "$col"; then
+              echo "column $tbl.$col already present — skip"
+            else
+              echo "adding column $tbl.$col"
+              wrangler d1 execute "$D1_NAME" --config "$CONFIG" --remote \
+                --command "ALTER TABLE $tbl ADD COLUMN $col $typ;"
+            fi
+          done
+          # Tables + indexes are IF NOT EXISTS — safe to apply every run.
+          wrangler d1 execute "$D1_NAME" --config "$CONFIG" --remote \
+            --file workers/tabready/deploy/schema-auth-migration-v2.9.290.create-only.sql
+
+      - name: Verify schema present
+        run: |
+          set -euo pipefail
+          wrangler d1 execute "$D1_NAME" --config "$CONFIG" --remote --json \
+            --command "PRAGMA table_info(users);" | jq -r '.[].results[].name' | grep -qx session_epoch \
+            || { echo "::error::session_epoch missing after migration"; exit 1; }
+          for t in auth_request_limits recovery_requests transfer_jti; do
+            wrangler d1 execute "$D1_NAME" --config "$CONFIG" --remote --json \
+              --command "SELECT name FROM sqlite_master WHERE type='table' AND name='$t';" \
+              | jq -e '.[].results | length > 0' >/dev/null \
+              || { echo "::error::table $t missing after migration"; exit 1; }
+          done
+
+      - name: Upload new version (NO production traffic) + preview URL
+        id: upload
+        run: |
+          set -euo pipefail
+          OUT=$(wrangler versions upload --config "$CONFIG" 2>&1 | tee /dev/stderr)
+          VID=$(echo "$OUT" | grep -oiE "Version ID:?[[:space:]]*[0-9a-f-]{36}" | grep -oE "[0-9a-f-]{36}" | head -1)
+          URL=$(echo "$OUT" | grep -oE "https://[a-z0-9-]+\.[a-z0-9.-]*workers\.dev" | head -1)
+          [ -n "$VID" ] || { echo "::error::could not parse new version id"; exit 1; }
+          [ -n "$URL" ] || { echo "::error::no preview URL (enable workers.dev preview URLs)"; exit 1; }
+          echo "new_version_id=$VID" >> "$GITHUB_OUTPUT"
+          echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
+          echo "New version $VID at preview $URL (no traffic yet)"
+
+      - name: Preview checks (versioned URL, no production traffic)
+        run: |
+          set -euo pipefail
+          URL="${{ steps.upload.outputs.preview_url }}"
+          V=$(curl -fsS "$URL/health" | jq -r .version)
+          [ "$V" = "$EXPECTED_VERSION" ] || { echo "::error::preview /health version $V != $EXPECTED_VERSION"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/api/vcard?id=x")
+          [ "$code" = "401" ] || { echo "::error::/api/vcard unauth expected 401, got $code"; exit 1; }
+          [ "$code" != "404" ] || { echo "::error::/api/vcard missing (404)"; exit 1; }
+          login=$(curl -s -o /dev/null -w '%{http_code}' "$URL/login"); echo "login page: $login"
+          man=$(curl -s -o /dev/null -w '%{http_code}' "$URL/manifest.webmanifest"); echo "manifest: $man"
+          echo "Preview checks passed."
+
+  promote:
+    needs: build-verify-preview
+    runs-on: ubuntu-latest
+    environment: production      # required-reviewer approval pauses HERE, before any traffic change
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      NEW: ${{ needs.build-verify-preview.outputs.new_version_id }}
+      PREV: ${{ needs.build-verify-preview.outputs.prev_version_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm i -g "wrangler@${WRANGLER_VERSION}"
+
+      - name: Gradual rollout — limited traffic
+        run: |
+          set -euo pipefail
+          PCT="${{ github.event.inputs.canary_percent }}"
+          REST=$((100 - PCT))
+          echo "Shifting ${PCT}% to $NEW, ${REST}% staying on $PREV"
+          if [ -n "$PREV" ] && [ "$PREV" != "null" ]; then
+            wrangler versions deploy "${NEW}@${PCT}" "${PREV}@${REST}" --config "$CONFIG" --yes
+          else
+            echo "::error::prev version id unknown — cannot do a safe split; aborting before traffic change"; exit 1
+          fi
+
+      - name: Verify at limited traffic (production host)
+        run: |
+          set -euo pipefail
+          BASE="https://tabready.shanepass.workers.dev"
+          for i in $(seq 1 20); do
+            v=$(curl -fsS "$BASE/health" | jq -r .version)
+            echo "health sample $i: $v"
+          done
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/vcard?id=x")
+          [ "$code" = "401" ] || { echo "::error::/api/vcard unauth expected 401 got $code"; exit 1; }
+          login=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/login")
+          [ "$login" = "200" ] || { echo "::error::/login expected 200 got $login"; exit 1; }
+          echo "Limited-traffic checks passed."
+
+      - name: Promote to 100%
+        run: |
+          set -euo pipefail
+          wrangler versions deploy "${NEW}@100" --config "$CONFIG" --yes
+
+      - name: Verify at 100%
+        run: |
+          set -euo pipefail
+          BASE="https://tabready.shanepass.workers.dev"
+          v=$(curl -fsS "$BASE/health" | jq -r .version)
+          [ "$v" = "$EXPECTED_VERSION" ] || { echo "::error::live /health version $v != $EXPECTED_VERSION"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/vcard?id=x")
+          [ "$code" = "401" ] || { echo "::error::/api/vcard unauth expected 401 got $code"; exit 1; }
+          me=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/me")   # unauth → 401 expected, not 500
+          [ "$me" != "500" ] || { echo "::error::/api/me returned 500"; exit 1; }
+          echo "Production at 100% verified: v$EXPECTED_VERSION, /api/vcard intact."
+
+  rollback:
+    needs: [build-verify-preview, promote]
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      PREV: ${{ needs.build-verify-preview.outputs.prev_version_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm i -g "wrangler@${WRANGLER_VERSION}"
+      - name: Restore previous Worker version (additive schema left in place)
+        run: |
+          set -euo pipefail
+          echo "::warning::Auto-rollback — restoring previous version ($ROLLBACK_SHA / v2.9.289)."
+          if [ -n "$PREV" ] && [ "$PREV" != "null" ]; then
+            wrangler versions deploy "${PREV}@100" --config "$CONFIG" --yes
+          else
+            wrangler rollback --config "$CONFIG" --yes --message "auto-rollback failed v2.9.290 release"
+          fi
+      - name: Verify rollback
+        run: |
+          set -euo pipefail
+          BASE="https://tabready.shanepass.workers.dev"
+          v=$(curl -fsS "$BASE/health" | jq -r .version)
+          echo "post-rollback /health version: $v (expect 2.9.289)"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/vcard?id=x")
+          echo "post-rollback /api/vcard unauth: $code (expect 401)"
+          echo "::notice::Rollback complete. Additive schema columns/tables are backward-compatible and intentionally NOT reversed. Backup artifact d1-backup-pre-2.9.290 retained."

@@ -1,0 +1,44 @@
+# TabReady — personal-account Worker config for the Phase-A code-only release.
+# Used ONLY by .github/workflows/tabready-v2.9.290-code-release.yml (manual, gated).
+# The old deploy.yml no longer touches tabready.
+#
+# ⚠️ VERIFY BEFORE FIRST RUN: the D1 database_ids below must match the LIVE
+# Worker's current bindings (confirm in Cloudflare dashboard → tabready →
+# Settings → Bindings). DB and CONTENT_DB ids are set from discovery; a wrong
+# id would misbind a database. All four resources are confirmed to exist in the
+# personal account.
+
+name = "tabready"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+account_id = "26c8013cfb2cf72dde19e55e6cf390b1"
+workers_dev = true
+
+# [triggers]/crons are intentionally OMITTED. Cloudflare keeps the currently
+# deployed Cron Trigger in place when the field is absent from config, so the
+# existing weekly cron is preserved without us needing to know its schedule.
+
+# Secrets are managed on the Worker and persist across versions — never placed
+# here: SESSION_SECRET, PROVISION_SECRET, PCO_APP_ID, PCO_SECRET,
+# RESEND_API_KEY, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, ANTHROPIC_API_KEY,
+# SCHEDULE_INTAKE_SECRET. New v2.9.290 features are fallback-safe when
+# CANONICAL_BASE_URL / SESSION_TRANSFER_SECRET are unset — Phase A does not set
+# them (canonical URL falls back to the request origin; transfer is Phase B).
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tabready"
+database_id = "dcadb25c-d503-45a7-9e29-254c2d5f50e5"
+
+[[d1_databases]]
+binding = "CONTENT_DB"
+database_name = "tab-website-content"
+database_id = "97d23702-3489-47d9-a1e9-0707f34b758d"  # VERIFY matches live binding
+
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "tabready-photos"
+
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "tab-shared-docs"
