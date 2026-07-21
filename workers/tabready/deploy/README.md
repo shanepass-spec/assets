@@ -1,16 +1,19 @@
-# TabReady v2.9.290 — Gated Deploy Assets
+# TabReady v2.9.290 — Deploy Assets
 
-This directory supports the **manual, gated** deployment workflow
-`.github/workflows/tabready-v2.9.290-gated-deploy.yml`. Nothing here deploys on
-its own.
+Supports the **manual, gated Phase-A code release**
+`.github/workflows/tabready-v2.9.290-code-release.yml`. Nothing here deploys on
+its own, and the old `deploy.yml` no longer touches `tabready` (it is filtered
+out of the matrix and hard-guarded).
 
-## Why this exists
-The old `.github/workflows/deploy.yml` deployed `workers/<name>/worker.js` to
-production **on every push to `main`**. For `tabready` that was unsafe: a merge
-could overwrite live production with whatever `worker.js` happened to be on
-`main`. `deploy.yml` has been changed to **never auto-deploy `tabready`** (it is
-filtered out of the matrix and hard-guarded); all other workers are unaffected.
-TabReady now deploys **only** through the gated workflow.
+## Two phases (Scout decision)
+- **Phase A (this workflow):** deploy the v2.9.290 **code** to the existing
+  **personal-account** Worker via Cloudflare versioned uploads. No Media-account
+  migration, no cross-account data copy, no R2 migration, no DNS/route cutover,
+  no session-bridge cutover. The only production write besides the code version
+  is the **additive** D1 schema, taken with a pre-change backup.
+- **Phase B (separate, later):** destination D1/R2 provisioning, full reconciled
+  data copy, secret creation, session bridge, DNS/route cutover, exact cron
+  recreation, real-device testing, source-account retirement.
 
 ## Identities
 | Role | Version | SHA-256 |
@@ -18,29 +21,35 @@ TabReady now deploys **only** through the gated workflow.
 | Candidate (`../worker.js`) | 2.9.290 | `2aeaed0af0eb3d2c7b22cb585859b89c3b5f13504a22d2529958bc290f88e2be` |
 | Rollback target | 2.9.289 | `6aae0ec256efd5cf1c8db6eb093f7d62b859b1b4493643c9260a3bde2c60211b` |
 
-`/health` reports `version=2.9.290` and `baseline_sha256=6aae0ec2…` (the live
-baseline this build was derived from). The workflow separately verifies the
-**deployed artifact** hashes to the candidate `2aeaed0a…`.
+## Phase-A workflow — what it actually executes
+1. **build-verify-preview** (no traffic):
+   - hash `worker.js` == candidate; version/vCard/migration structural checks;
+   - run 16 migration + 7 vCard tests;
+   - validate required secret **names** exist (no values);
+   - capture the current live version id (rollback target);
+   - **backup** the live D1 (`wrangler d1 export`, uploaded as an artifact);
+   - apply the **additive** schema — guarded `ALTER ADD COLUMN` (skips if present) + `CREATE … IF NOT EXISTS`; then verify columns/tables exist;
+   - `wrangler versions upload` → new version **without traffic** + preview URL;
+   - **preview checks** on the versioned URL: `/health` == 2.9.290, `/api/vcard` unauth → 401, login/manifest reachable.
+2. **promote** (GitHub `production` Environment — approval pauses **here, before any traffic change**):
+   - gradual `wrangler versions deploy NEW@<canary> PREV@<rest>`;
+   - verify at limited traffic (health/`/api/vcard`/login);
+   - promote `NEW@100`; verify at 100% (version, `/api/vcard`, `/api/me` not 500).
+3. **rollback** (`if: failure()`): redeploy the previous version at 100% (or `wrangler rollback`). **Additive schema is left in place** (backward-compatible — not reversed). Backup artifact retained.
 
-## Contents
-- `legacy-bridge.js` — redirect/handoff-only old-host bridge (no app D1/R2 binding).
-- `schema-auth-migration-v2.9.290.sql` — additive migration (`transfer_jti`, `session_epoch`, restore tables). Reversible.
-- `DEPLOYMENT-GATE.md` — the full gate checklist.
-- `tests/` — `test-build.mjs` (16 migration) + `test-vcard-noregress.mjs` (7 vCard) + the candidate/bridge under test.
+## Files
+- `../wrangler.toml` — personal-account config; `[triggers]`/`crons` **omitted** so the existing weekly cron is preserved. ⚠️ Verify the `CONTENT_DB` `database_id` matches the live binding before first run.
+- `schema-auth-migration-v2.9.290.sql` — full one-time migration (v2.9.288→290).
+- `schema-auth-migration-v2.9.290.create-only.sql` — idempotent CREATE subset used by the workflow.
+- `legacy-bridge.js` — Phase-B bridge (not used in Phase A).
+- `tests/` — 16 migration + 7 vCard no-regression suites (run in CI against the exact deploy bytes).
+- `DEPLOYMENT-GATE.md` — full gate checklist (includes Phase-B items).
 
-## Workflow stages (all must pass; production is also human-gated)
-1. **verify-candidate** — worker.js hash == candidate; version/vCard/migration present; 16+7 tests.
-2. **config-validation** — required secret *names* exist (no values printed).
-3. **schema-migration** — additive schema to staging D1.
-4. **provision-staging** — ensure Media staging D1/R2; set staging secrets.
-5. **data-copy-integrity** — export source → import staging → reconcile counts/checksums/`usr_*` IDs (fail on mismatch).
-6. **deploy-staging** — candidate + bridge to an isolated staging host.
-7. **test-staging** — health/version, `/api/vcard` 401, auth, bridge behaviour.
-8. **deploy-production** — needs *all* prior + the GitHub `production` Environment approval (reviewer attests real-device iPhone/Android tests and DNS-cutover readiness — the two things CI cannot do). Only runs when `stage=production`.
-9. **verify-production** — deployed hash == candidate; health; primary workflows; `/api/vcard`; bindings; cron; error rates; row-count/integrity == source.
-10. **rollback** — automatic on any production-stage failure → restore v2.9.289 / `6aae0ec2`; keep prior version + backups.
+## One-time setup required from Shane before the first run
+- Repo **Environment `production`** with required reviewers (gates the `promote` job).
+- GitHub secrets `CF_API_TOKEN`, `CF_ACCOUNT_ID`.
+- Confirm the pinned `WRANGLER_VERSION` and the `CONTENT_DB` `database_id`.
 
-## Privileged setup still required from Shane (one-time)
-- Add repo **Environment `production`** with required reviewers (so step 8 pauses for human approval).
-- Ensure GitHub secrets exist: `CF_API_TOKEN`, `CF_ACCOUNT_ID`, `CF_API_TOKEN_CHURCH` (+ the Worker secrets set on the deployments themselves).
-- Confirm the exact weekly **cron** schedule from the current Worker's Triggers (not exposed via tooling) so it can be recreated on Media.
+**Untested until first run:** exact `wrangler versions`/`rollback` flags and the
+version-id parsing are written to current docs but have not executed against the
+live account; the first run is the supervised proof.
