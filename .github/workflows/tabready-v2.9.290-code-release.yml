@@ -72,8 +72,15 @@ jobs:
           echo "wrangler: $(wrangler --version 2>/dev/null || echo unknown)"
           LIST=$(wrangler d1 list --json 2>d1err.txt); rc=$?
           if [ $rc -ne 0 ]; then
-            echo "::error::'wrangler d1 list' failed (exit $rc). Likely the CF_API_TOKEN lacks D1 scope, or CF_ACCOUNT_ID mismatches the token's account. Diagnostics below (no secret values):"
+            echo "::error::'wrangler d1 list' failed (exit $rc). Diagnostics below identify WHICH token GitHub is using and Cloudflare's exact error (no secret values):"
+            echo "----- wrangler d1 list stdout (Cloudflare JSON error) -----"; echo "$LIST" | head -40
             echo "----- wrangler d1 list stderr -----"; sed 's/^/  d1> /' d1err.txt 2>/dev/null || true
+            echo "----- token identity (id + status ONLY — never the value) -----"
+            curl -s https://api.cloudflare.com/client/v4/user/tokens/verify \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              | jq '{cf_token_id: .result.id, status: .result.status, success: .success, errors: (.errors // [] | map(.message))}' 2>/dev/null \
+              || echo "(token verify call failed)"
+            echo "(^ compare cf_token_id above with the 'TabReady Deploy' token id shown in Cloudflare → My Profile → API Tokens)"
             echo "----- wrangler whoami -----"; wrangler whoami 2>&1 | sed 's/^/  who> /' | head -30 || true
             exit 1
           fi
