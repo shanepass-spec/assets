@@ -31,7 +31,9 @@ permissions:
   contents: read
 
 env:
-  WRANGLER_VERSION: '3.114.0'          # pinned; confirm this version exists before first run
+  WRANGLER_VERSION: '3.112.0'          # 3.114.0 breaks nodejs_compat deploys (npm-flagged); pinned to 3.112.0
+  WRANGLER_SEND_METRICS: 'false'       # quiet, non-interactive wrangler in CI
+  CI: 'true'
   CONFIG: workers/tabready/wrangler.toml
   WORKER_SRC: workers/tabready/worker.js
   D1_NAME: tabready
@@ -61,12 +63,19 @@ jobs:
 
       - name: Fail-closed D1 binding preflight (verify live IDs == wrangler.toml)
         run: |
-          set -euo pipefail
+          set -uo pipefail
           # Runs BEFORE any D1 export, schema command, Worker upload, or traffic
           # change. Resolves each D1 binding's live database by exact name, requires
           # exactly one match, and aborts if the live id differs from wrangler.toml.
           # Prints only names + ids — never secrets or data.
-          LIST=$(wrangler d1 list --json)
+          echo "wrangler: $(wrangler --version 2>/dev/null || echo unknown)"
+          LIST=$(wrangler d1 list --json 2>d1err.txt); rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::error::'wrangler d1 list' failed (exit $rc). Most likely the CF_API_TOKEN lacks D1 read/write scope, or is account-mismatched. Raw wrangler output:"
+            sed 's/^/  wrangler> /' d1err.txt || true
+            exit 1
+          fi
+          echo "$LIST" | jq empty 2>/dev/null || { echo "::error::d1 list did not return JSON. First lines:"; echo "$LIST" | head -20; exit 1; }
           toml_id() { grep -A3 "binding = \"$1\"" "$CONFIG" | grep -m1 database_id | grep -oE '[0-9a-f-]{36}'; }
           verify() {
             NAME="$1"; TOML_ID="$2"
