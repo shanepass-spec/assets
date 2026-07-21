@@ -63,7 +63,8 @@ jobs:
 
       - name: Fail-closed D1 binding preflight (verify live IDs == wrangler.toml)
         run: |
-          set -uo pipefail
+          set +e            # GitHub runs steps as `bash -e`; disable it so we can capture and print errors
+          set -u -o pipefail
           # Runs BEFORE any D1 export, schema command, Worker upload, or traffic
           # change. Resolves each D1 binding's live database by exact name, requires
           # exactly one match, and aborts if the live id differs from wrangler.toml.
@@ -71,8 +72,9 @@ jobs:
           echo "wrangler: $(wrangler --version 2>/dev/null || echo unknown)"
           LIST=$(wrangler d1 list --json 2>d1err.txt); rc=$?
           if [ $rc -ne 0 ]; then
-            echo "::error::'wrangler d1 list' failed (exit $rc). Most likely the CF_API_TOKEN lacks D1 read/write scope, or is account-mismatched. Raw wrangler output:"
-            sed 's/^/  wrangler> /' d1err.txt || true
+            echo "::error::'wrangler d1 list' failed (exit $rc). Likely the CF_API_TOKEN lacks D1 scope, or CF_ACCOUNT_ID mismatches the token's account. Diagnostics below (no secret values):"
+            echo "----- wrangler d1 list stderr -----"; sed 's/^/  d1> /' d1err.txt 2>/dev/null || true
+            echo "----- wrangler whoami -----"; wrangler whoami 2>&1 | sed 's/^/  who> /' | head -30 || true
             exit 1
           fi
           echo "$LIST" | jq empty 2>/dev/null || { echo "::error::d1 list did not return JSON. First lines:"; echo "$LIST" | head -20; exit 1; }
