@@ -1,0 +1,82 @@
+TAP version 13
+# Subtest: [F-02] forged From header is accepted verbatim as the routing identity
+ok 1 - [F-02] forged From header is accepted verbatim as the routing identity
+  ---
+  duration_ms: 1.259073
+  type: 'test'
+  ...
+# Subtest: [F-03] unset ALLOWED_DOMAINS accepts every sender on the internet
+ok 2 - [F-03] unset ALLOWED_DOMAINS accepts every sender on the internet
+  ---
+  duration_ms: 0.361354
+  type: 'test'
+  ...
+# Subtest: [F-03] allow-list suffix check is loose (endsWith on bare domain)
+ok 3 - [F-03] allow-list suffix check is loose (endsWith on bare domain)
+  ---
+  duration_ms: 0.139754
+  type: 'test'
+  ...
+# Subtest: [F-04] destination local-part drives check intent (no auth on intent)
+ok 4 - [F-04] destination local-part drives check intent (no auth on intent)
+  ---
+  duration_ms: 0.1491
+  type: 'test'
+  ...
+# Subtest: [F-04] subject/memo keywords alone flip a receipt into a check-request draft
+ok 5 - [F-04] subject/memo keywords alone flip a receipt into a check-request draft
+  ---
+  duration_ms: 0.385251
+  type: 'test'
+  ...
+# Subtest: [F-05] image/svg+xml attachment is accepted and its content_type passed through
+ok 6 - [F-05] image/svg+xml attachment is accepted and its content_type passed through
+  ---
+  duration_ms: 0.6705
+  type: 'test'
+  ...
+# Subtest: [F-06] MIME/content mismatch: bytes are HTML but declared image/png -> accepted as png
+ok 7 - [F-06] MIME/content mismatch: bytes are HTML but declared image/png -> accepted as png
+  ---
+  duration_ms: 0.377822
+  type: 'test'
+  ...
+# Subtest: [F-07] application/octet-stream resolves type purely from the filename extension
+ok 8 - [F-07] application/octet-stream resolves type purely from the filename extension
+  ---
+  duration_ms: 0.33152
+  type: 'test'
+  ...
+# Subtest: [F-08] same email parsed twice yields two independent extractions (no message-id/idempotency)
+ok 9 - [F-08] same email parsed twice yields two independent extractions (no message-id/idempotency)
+  ---
+  duration_ms: 1.788363
+  type: 'test'
+  ...
+# Subtest: [F-09] v1.0 body-capture forwards raw <script> HTML with no sanitization
+ok 10 - [F-09] v1.0 body-capture forwards raw <script> HTML with no sanitization
+  ---
+  duration_ms: 0.830584
+  type: 'test'
+  ...
+# Subtest: [F-10] tiny (non-receipt) payload just over the 800-char gate is accepted
+ok 11 - [F-10] tiny (non-receipt) payload just over the 800-char gate is accepted
+  ---
+  duration_ms: 0.199557
+  type: 'test'
+  ...
+# Subtest: [control] v1.2 with no attachment returns null (silently dropped)
+ok 12 - [control] v1.2 with no attachment returns null (silently dropped)
+  ---
+  duration_ms: 0.089705
+  type: 'test'
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 104.700985
