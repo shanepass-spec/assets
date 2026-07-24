@@ -1,0 +1,194 @@
+TAP version 13
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"accepted","sender_domain":"thetabsarasota.org","method":"dmarc","intent":"receipt","content_type":"image/png"}
+# Subtest: happy: authenticated allowlisted staff receipt is accepted
+ok 1 - happy: authenticated allowlisted staff receipt is accepted
+  ---
+  duration_ms: 67.897979
+  type: 'test'
+  ...
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"accepted","sender_domain":"thetabsarasota.org","method":"dmarc","intent":"receipt","content_type":"application/pdf"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"auth_auth_unaligned_or_failed","sender_domain":"thetabsarasota.org"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"auth_auth_unaligned_or_failed","sender_domain":"thetabsarasota.org"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"auth_untrusted_authserv","sender_domain":"thetabsarasota.org"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"auth_auth_unaligned_or_failed","sender_domain":"thetabsarasota.org"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"sender_not_allowlisted","sender_domain":"amazon.com"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"sender_not_allowlisted","sender_domain":"amazon.com"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"check_not_authorized","sender_domain":"thetabsarasota.org"}
+# Subtest: happy: staff-forwarded PDF receipt accepted (manual forward = authenticated staff From)
+ok 2 - happy: staff-forwarded PDF receipt accepted (manual forward = authenticated staff From)
+  ---
+  duration_ms: 2.682076
+  type: 'test'
+  ...
+# Subtest: forged visible From (staff name, auth aligned to attacker domain) -> rejected
+ok 3 - forged visible From (staff name, auth aligned to attacker domain) -> rejected
+  ---
+  duration_ms: 1.19457
+  type: 'test'
+  ...
+# Subtest: forged Authentication-Results header (only trusted top line counts) -> rejected
+ok 4 - forged Authentication-Results header (only trusted top line counts) -> rejected
+  ---
+  duration_ms: 1.014597
+  type: 'test'
+  ...
+# Subtest: forged Authentication-Results with untrusted authserv-id -> no trusted evidence -> rejected
+ok 5 - forged Authentication-Results with untrusted authserv-id -> no trusted evidence -> rejected
+  ---
+  duration_ms: 1.403655
+  type: 'test'
+  ...
+# Subtest: SPF/DKIM/DMARC all fail -> rejected, nothing forwarded
+ok 6 - SPF/DKIM/DMARC all fail -> rejected, nothing forwarded
+  ---
+  duration_ms: 1.044043
+  type: 'test'
+  ...
+# Subtest: unknown sender (auth passes, not on staff allowlist) -> rejected
+ok 7 - unknown sender (auth passes, not on staff allowlist) -> rejected
+  ---
+  duration_ms: 1.664656
+  type: 'test'
+  ...
+# Subtest: forwarded/ambiguous vendor sender (dkim-aligned to vendor, not staff) -> rejected
+ok 8 - forwarded/ambiguous vendor sender (dkim-aligned to vendor, not staff) -> rejected
+  ---
+  duration_ms: 0.79906
+  type: 'test'
+  ...
+# Subtest: unauthorized check intent -> rejected, NOT downgraded or rerouted
+ok 9 - unauthorized check intent -> rejected, NOT downgraded or rerouted
+  ---
+  duration_ms: 2.228854
+  type: 'test'
+  ...
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"accepted","sender_domain":"thetabsarasota.org","method":"dmarc","intent":"check","content_type":"image/png"}
+# Subtest: authorized check intent -> accepted with intent=check
+ok 10 - authorized check intent -> accepted with intent=check
+  ---
+  duration_ms: 9.357376
+  type: 'test'
+  ...
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"accepted","sender_domain":"thetabsarasota.org","method":"dmarc","intent":"receipt","content_type":"image/png"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"duplicate_suppressed","sender_domain":"thetabsarasota.org","method":"dmarc"}
+# Subtest: duplicate Message-ID (same bytes) -> second is suppressed
+ok 11 - duplicate Message-ID (same bytes) -> second is suppressed
+  ---
+  duration_ms: 1.913301
+  type: 'test'
+  ...
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"accepted","sender_domain":"thetabsarasota.org","method":"dmarc","intent":"receipt","content_type":"image/png"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"duplicate_suppressed","sender_domain":"thetabsarasota.org","method":"dmarc"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"unsupported_or_mismatched_content","sender_domain":"thetabsarasota.org"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"unsupported_or_mismatched_content","sender_domain":"thetabsarasota.org"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"no_attachment","sender_domain":"thetabsarasota.org"}
+# Subtest: same attachment under a NEW Message-ID -> suppressed (content-hash dedupe)
+ok 12 - same attachment under a NEW Message-ID -> suppressed (content-hash dedupe)
+  ---
+  duration_ms: 1.758996
+  type: 'test'
+  ...
+# Subtest: MIME/content mismatch (declared image/png, bytes are HTML) -> rejected
+ok 13 - MIME/content mismatch (declared image/png, bytes are HTML) -> rejected
+  ---
+  duration_ms: 0.453424
+  type: 'test'
+  ...
+# Subtest: SVG attachment -> rejected (active type, sniff not in allow-set)
+ok 14 - SVG attachment -> rejected (active type, sniff not in allow-set)
+  ---
+  duration_ms: 0.396341
+  type: 'test'
+  ...
+# Subtest: raw HTML body-only email (no attachment) -> rejected, nothing stored/forwarded
+ok 15 - raw HTML body-only email (no attachment) -> rejected, nothing stored/forwarded
+  ---
+  duration_ms: 0.571947
+  type: 'test'
+  ...
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"accepted","sender_domain":"thetabsarasota.org","method":"dmarc","intent":"receipt","content_type":"image/png"}
+# Subtest: downstream timeout then success -> retried, accepted
+ok 16 - downstream timeout then success -> retried, accepted
+  ---
+  duration_ms: 2.640514
+  type: 'test'
+  ...
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"deadletter","reason":"downstream_post_failed","status":500,"sender_domain":"thetabsarasota.org"}
+# Subtest: downstream persistent failure -> VISIBLE (throws) and dead-lettered
+ok 17 - downstream persistent failure -> VISIBLE (throws) and dead-lettered
+  ---
+  duration_ms: 2.562957
+  type: 'test'
+  ...
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"accepted","sender_domain":"thetabsarasota.org","method":"dmarc","intent":"receipt","content_type":"image/png"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"config_error_no_secret"}
+# {"svc":"receipts-email-intake","v":"v2.0","evt":"reject","reason":"sender_not_allowlisted","sender_domain":"thetabsarasota.org"}
+# Subtest: partial-write recovery: retries carry the SAME dedupe_key (downstream idempotent) 
+ok 18 - partial-write recovery: retries carry the SAME dedupe_key (downstream idempotent) 
+  ---
+  duration_ms: 1.561533
+  type: 'test'
+  ...
+# Subtest: no INTAKE_SECRET -> fail closed, nothing forwarded
+ok 19 - no INTAKE_SECRET -> fail closed, nothing forwarded
+  ---
+  duration_ms: 0.516739
+  type: 'test'
+  ...
+# Subtest: deny-by-default: empty STAFF_ALLOWLIST accepts nobody
+ok 20 - deny-by-default: empty STAFF_ALLOWLIST accepts nobody
+  ---
+  duration_ms: 0.483555
+  type: 'test'
+  ...
+# Subtest: logs never contain the secret or receipt bytes
+ok 21 - logs never contain the secret or receipt bytes
+  ---
+  duration_ms: 2.513295
+  type: 'test'
+  ...
+# Subtest: unit: sniffMediaType recognizes allowed types and rejects svg/html
+ok 22 - unit: sniffMediaType recognizes allowed types and rejects svg/html
+  ---
+  duration_ms: 0.446315
+  type: 'test'
+  ...
+# Subtest: unit: domainsAligned relaxed alignment
+ok 23 - unit: domainsAligned relaxed alignment
+  ---
+  duration_ms: 0.207729
+  type: 'test'
+  ...
+# Subtest: unit: parseTrustedAuthResults ignores untrusted authserv
+ok 24 - unit: parseTrustedAuthResults ignores untrusted authserv
+  ---
+  duration_ms: 0.167164
+  type: 'test'
+  ...
+# Subtest: unit: evaluateAuth requires alignment for component pass
+ok 25 - unit: evaluateAuth requires alignment for component pass
+  ---
+  duration_ms: 0.178456
+  type: 'test'
+  ...
+# Subtest: unit: allowlists deny by default
+ok 26 - unit: allowlists deny by default
+  ---
+  duration_ms: 0.613711
+  type: 'test'
+  ...
+# Subtest: unit: selectValidAttachment picks the largest valid, rejects oversize
+ok 27 - unit: selectValidAttachment picks the largest valid, rejects oversize
+  ---
+  duration_ms: 0.144144
+  type: 'test'
+  ...
+1..27
+# tests 27
+# suites 0
+# pass 27
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 210.666807

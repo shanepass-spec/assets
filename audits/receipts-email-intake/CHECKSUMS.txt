@@ -1,0 +1,17 @@
+# SHA-256 checksums — receipts-email-intake audit artifacts
+# Generated 2026-07-24T07:50:04Z on branch claude/receipts-email-intake-audit-s8wb8p
+#
+# NOTE: deployed/*.worker.js are REDACTED (fallback INTAKE_SECRET replaced with a
+#       placeholder) — hashes describe the redacted copies, not live bundle bytes (F-01).
+#       corrected/worker.js is the hardened v2.0 candidate (no secret literal).
+
+1fb47805812a138d3e32a7e9c8aab96677c04999f2aea898ebbf43996f473ff9  deployed/church-account-v1.0.worker.js
+ad606437b9ca42f94ef10590df02989b8a415a98a3a0822883c38735a8074887  deployed/personal-account-v1.2.worker.js
+5c80e69f317558a069264276dab147c641bfbece7ef322467888519900736f2c  test/harness.mjs
+43ec755530ab08a5b594d0b390f1ce8aa7d3ee024505fff10f015165faf97cba  test/intake.test.mjs
+c7d00136684cf79c77073b58651c0d537e5b15ae041e38a6ae4ee844863102b2  test/OUTPUT.txt
+7a8541e3dca7a7f41ec453b88c7ade756b651f0ae8264027118c0a3b5b541443  corrected/worker.js
+6ac1dbb04f0b94821635bb45f9d147757509df71fc80bf406a43a49f6736c916  corrected/test/corrected.test.mjs
+dcbe8bfea2667abdcb210c33d4a38b52bd3f434b012424402f14f38205e0e454  corrected/test/OUTPUT.txt
+e9a3fe3ed1edfdcf507108818e42b4b236097976c24390aeb06ef8571af40e32  corrected/v1.2-to-v2.0.patch
+fece67f93d78b6f5715bf3aa779c49895f5ee11fe9f7ae349f2b2045610debb7  corrected/wrangler.example.toml
