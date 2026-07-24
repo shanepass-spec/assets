@@ -1,5 +1,5 @@
 # SHA-256 checksums — receipts-email-intake audit artifacts
-# Generated 2026-07-24T07:26:19Z on branch claude/receipts-email-intake-audit-s8wb8p
+# Generated 2026-07-24T07:34:40Z on branch claude/receipts-email-intake-audit-s8wb8p
 #
 # NOTE: the two deployed/*.worker.js copies are REDACTED (fallback INTAKE_SECRET
 #       literal replaced with a placeholder). Their checksums therefore describe

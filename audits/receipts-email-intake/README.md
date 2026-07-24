@@ -59,13 +59,17 @@ SOURCE:            No VCS source pre-audit. Live bundles pulled read-only 2026-0
 ROUTE:             GET /health + email() entrypoint. workers.dev health URL(s) exist but
                    were NOT reachable this session (proxy blocks *.workers.dev). Email Routing
                    rules NOT readable (no Email Routing API). Downstream: receipts.shanepass.workers.dev/api/intake.
-CURRENT VERSION:   personal v1.2 / church v1.0 (divergent — F-11).
+CURRENT VERSION:   personal v1.2 / church v1.0 (divergent — F-11). PRODUCTION = church v1.0
+                   (VERIFIED 2026-07-24 via D1 fingerprint aggregate); personal v1.2 un-promoted.
+                   => live worker is the older/less-safe v1.0: F-09 is a LIVE exposure, F-04 latent.
 GOVERNING SPEC:    GOVERNING_SPEC.md (frozen 2026-07-24).
 LAST VERIFIED PROOF: Cloudflare API bundle retrieval + `node --test` (12/12), 2026-07-24.
 OPEN FINDINGS:     F-01..F-15 all OPEN (none fixed). Criticals: F-01, F-02.
-NEXT ACTOR:        Shane — resolve OPEN_HUMAN_DECISIONS D-1..D-5.
-NEXT SAFE ACTION:  Get D-2 (which deployment is prod) + D-3 (auth policy); then implement the
-                   smallest corrections behind a separately authorized deploy.
+NEXT ACTOR:        Shane — resolve OPEN_HUMAN_DECISIONS D-1, D-3, D-4, D-5 (D-2 fact resolved).
+NEXT SAFE ACTION:  D-2 fact resolved (prod = church v1.0). Get D-3 (auth policy) + D-2 product
+                   choice (harden v1.0 in place vs promote hardened v1.2 to church); then
+                   implement the smallest corrections behind a separately authorized deploy.
+                   Prioritize the LIVE F-09 body-capture path in v1.0.
 DO NOT:            Deploy/stage; change email routing/DNS/domains; change prod bindings/secrets;
                    modify live storage/DB; delete receipts or rollback sources; expose secret
                    values; overlap Guardian3.2 or Section 5; claim live status without proof.

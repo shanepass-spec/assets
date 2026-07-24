@@ -134,11 +134,20 @@ with header `x-intake-secret`. All storage happens **downstream** in the
   worker's output. Confirmed from its deployed bundle (v3.7.x; `/api/intake`
   handler at line ~2185).
 
-## 10. Current staging / production status — CLAIMED-NOT-VERIFIED
+## 10. Current staging / production status — VERIFIED (updated 2026-07-24)
 
-- Both scripts are deployed (present in `workers_list`). No `staging`/`production`
-  environment tags are exposed by the tools. "Production" = whichever account's
-  Email Routing points a live address at its worker (unproven — §4).
+- **Production = church account `ffd3…`, running v1.0.** The personal v1.2 is an
+  un-promoted iteration not wired to Email Routing.
+- **Proof (read-only, metadata-only):** aggregate over downstream D1
+  `pending_email_receipts` (no contents/PII selected) shows 13/49 rows are
+  `text/html` body-captures — a **v1.0-only** behavior — most recent 2026-07-19;
+  and **0** rows carry `intent='check'` or a typed `note` (both **v1.2-only**
+  outputs). See D1 query in the audit trail; result: `total_rows=49,
+  body_html_rows=13, last_body_html=2026-07-19, check_intent_rows=0,
+  rows_with_note=0`.
+- **Implication:** the LIVE worker is the older, less-safe v1.0 → **F-09 is a live
+  exposure** (~27% of traffic used the body-capture path); **F-04 is latent**
+  until/unless v1.2 is promoted.
 
 ## 11. Rollback source — VERIFIED (now preserved)
 
@@ -163,5 +172,6 @@ with header `x-intake-secret`. All storage happens **downstream** in the
 | Downstream storage (R2 `receipts-files`, D1 `receipts`) | **VERIFIED** |
 | No D1/KV/R2/queue binding on the intake worker | **VERIFIED** |
 | Live `/health` output & live dashboard var/secret values | CLAIMED-NOT-VERIFIED (proxy blocks egress; tools can't read vars) |
-| Email Routing address(es) & which account is "prod" | CLAIMED-NOT-VERIFIED (no Email Routing API) |
+| **Which account is "prod"** | **VERIFIED** (church v1.0; D1 fingerprint aggregate, 2026-07-24 — §10) |
+| Email Routing address(es) (exact local-parts) | CLAIMED-NOT-VERIFIED (no Email Routing API) |
 | Live-bundle byte checksum (with real secret) | CLAIMED-NOT-VERIFIED (secret intentionally not written to disk) |

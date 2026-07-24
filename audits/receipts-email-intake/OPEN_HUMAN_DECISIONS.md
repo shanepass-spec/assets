@@ -12,14 +12,27 @@ audit scope).
   ROLLBACK_PLAN "Secret rotation note").
 - **Owner:** Shane. **Until then:** F-01 stays open; do not deploy.
 
-## D-2 — Which deployment is production? (blocks F-11 convergence)
-Two live deployments diverge: personal `v1.2` (intent routing, single attachment)
-vs church `v1.0` (all attachments + raw HTML body capture). The Email Routing
-rules that decide which actually receives mail could not be read this session.
-- **Decision:** confirm which account/address is the live receipts intake, which
-  version is authoritative, and whether the other should be retired.
-- **Owner:** Shane. **Needed for:** converging both accounts and closing F-09
-  (only the church v1.0 body-capture path is exposed).
+## D-2 — Which deployment is production? — FACT RESOLVED 2026-07-24; product choice remains
+**The factual question is now VERIFIED:** production is the **church account
+`ffd3…`, running v1.0.** Proof (read-only, metadata-only aggregate over downstream
+D1 `pending_email_receipts`, no contents/PII read): 13 of 49 rows are `text/html`
+body-captures — a behavior **only v1.0 produces** — most recent **2026-07-19**;
+and **zero** rows carry `intent='check'` or a typed `note`, the outputs **only
+v1.2 produces**. The newer personal **v1.2 is not wired to Email Routing** (which
+lives in the church account per `deploy.yml`); it is an un-promoted iteration.
+
+Consequence: the LIVE worker is the OLDER, less-safe **v1.0**, so **F-09 (raw-HTML
+body-capture stored-XSS path) is a LIVE exposure** — ~27% of real intake traffic
+(13/49) took that path. Conversely **F-04 (check-intent abuse) is currently
+LATENT** — it only becomes live if v1.2 is promoted.
+
+- **Decision that REMAINS (product, Shane's call):** target one hardened worker in
+  the **church** account (structural — Email Routing for the domain is there) and
+  either (a) harden v1.0 in place and retire personal v1.2, or (b) harden v1.2,
+  promote it to church, and retire v1.0. Option (b) must gate check-intent (F-04)
+  before going live.
+- **Owner:** Shane. **Needed for:** converging to one version and prioritizing the
+  live F-09 fix.
 
 ## D-3 — Sender authorization & authentication policy (shapes F-02/F-03/F-04)
 What is the authoritative rule for "who may submit a receipt / seed a check

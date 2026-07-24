@@ -206,8 +206,14 @@ Rule ids reference [`GOVERNING_SPEC.md`](GOVERNING_SPEC.md).
   a fix applied to one leaves the other exposed; audit conclusions differ per
   environment.
 - **Smallest correction:** decide the single supported version, converge both
-  accounts to it, retire the other. (Which account is prod = human decision D-2.)
-- **Status:** VERIFIED that both exist and differ; "which is prod" CLAIMED-NOT-VERIFIED.
+  accounts to it, retire the other. (Product choice remains for Shane — D-2.)
+- **Status:** VERIFIED that both exist and differ. **Production resolved
+  2026-07-24: church v1.0 is live; personal v1.2 is un-promoted** (D1 fingerprint
+  aggregate — see CURRENT_INVENTORY §10). **Live-vs-latent impact:** because v1.0
+  is the live worker, **F-09 (raw-HTML body-capture stored-XSS) is a LIVE
+  exposure** (~27% of intake traffic used that path); **F-04 (check-intent abuse)
+  is LATENT** until v1.2 is promoted. All shared findings (F-01, F-02, F-03, F-05,
+  F-06, F-07, F-08, F-13) are live via v1.0.
 
 ## F-12 — No source / rollback source in version control · **Medium** · VERIFIED
 - **Violated rule:** S10.
