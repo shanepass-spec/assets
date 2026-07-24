@@ -25,8 +25,12 @@ performed. Secret values are redacted everywhere.
 | [`test/`](test/) | Offline reproduction (`intake.test.mjs`, `harness.mjs`) + captured `OUTPUT.txt` (12/12 pass) |
 | [`deployed/`](deployed/) | Preserved **redacted** copies of both live bundles (rollback reference) |
 | [`ROLLBACK_PLAN.md`](ROLLBACK_PLAN.md) | Non-destructive restore procedure (human-gated) |
-| [`OPEN_HUMAN_DECISIONS.md`](OPEN_HUMAN_DECISIONS.md) | 5 decisions only Shane/Business Office can make |
+| [`OPEN_HUMAN_DECISIONS.md`](OPEN_HUMAN_DECISIONS.md) | Decisions only Shane/Business Office can make |
 | [`CHECKSUMS.txt`](CHECKSUMS.txt) | SHA-256 of preserved artifacts |
+| **[`corrected/`](corrected/)** | **Hardened v2.0 candidate (option b) + 27-test regression suite + exact diff** |
+| [`CORRECTION_SUMMARY.md`](CORRECTION_SUMMARY.md) | Closeout: diff, 39/39 test totals, remaining decisions, no-deploy confirmation |
+| [`SECRET_ROTATION_RUNBOOK.md`](SECRET_ROTATION_RUNBOOK.md) | Coordinated zero-drop `INTAKE_SECRET` rotation (human-gated) |
+| [`STAGING_PLAN.md`](STAGING_PLAN.md) | Church-account staging + smoke tests + cutover + retirement (human-gated) |
 
 ## Top risks (see AUDIT_FINDINGS.md for proof)
 - **F-01 (Critical)** — shared `INTAKE_SECRET` is hard-coded in worker source
@@ -107,8 +111,20 @@ STOP CONDITIONS:      Hit & respected — a live email-route/prod/secret change 
                       required to go further, and Shane must decide ownership/privacy/retention (D-1..D-5).
 ```
 
+## Correction status (option b, 2026-07-24)
+Shane authorized **option (b)** and supplied the **D-3 sender policy**. A hardened
+**v2.0 candidate** is built offline in [`corrected/`](corrected/) from the v1.2 base
+(church-account target), implementing every item on the correction list and the full
+D-3 policy. **39/39 tests pass** (12 findings-reproduction + 27 hardening
+regressions). Runbooks for coordinated secret rotation, church staging, and rollback
+are included. **Nothing was staged, deployed, rotated, or routed** — those remain
+HUMAN-GATED. See [`CORRECTION_SUMMARY.md`](CORRECTION_SUMMARY.md).
+
 ## FINAL RULING
-**FAIL — return for specific offline correction.**
+**FAIL — return for specific offline correction.** *(The correction is now
+authored and offline-verified; the ruling stays FAIL until the gated staging +
+rotation land and CI/live smoke tests pass — production is still the un-hardened
+v1.0.)*
 
 The worker does not meet the governing spec: a hard-coded shared secret (F-01),
 unauthenticated `From`-based routing (F-02), open sender default (F-03),

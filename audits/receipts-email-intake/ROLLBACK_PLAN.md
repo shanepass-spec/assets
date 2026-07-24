@@ -36,6 +36,18 @@ conditions: live email route / production / secret changes).
   it as `deployed/<account>-<version>-prechange.worker.js` so any deploy is itself
   reversible.
 
+## v2.0 cutover rollback (option (b))
+If the hardened `corrected/worker.js` (v2.0) is staged/cut over in the church
+account and misbehaves:
+1. Redeploy the preserved **church v1.0** bundle (`deployed/church-account-v1.0.worker.js`,
+   re-inject the secret at deploy — never from source) OR repoint the production
+   Email Routing address back to the still-present v1.0 script if you staged v2.0
+   under a separate name (recommended — see STAGING_PLAN Step 1).
+2. Because the rotation window keeps `INTAKE_SECRET_PREV` valid downstream
+   (SECRET_ROTATION_RUNBOOK), reverting the intake side drops no receipts.
+3. Rollback restores code/routing only — never delete receipts, R2 objects, or D1
+   rows. The v2.0 dedupe is idempotent, so a re-run after rollback cannot double-write.
+
 ## Secret rotation note (F-01)
 Rotating `INTAKE_SECRET` must be done on the intake worker(s) **and** the
 downstream `receipts` worker **together**; a one-sided rotation black-holes every

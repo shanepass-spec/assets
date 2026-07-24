@@ -1,0 +1,459 @@
+// receipts-email-intake.js v2.0 — HARDENED CANDIDATE (offline; NOT deployed)
+//
+// Base: personal-account v1.2 (see ../deployed/personal-account-v1.2.worker.js).
+// Target (eventual, HUMAN-GATED): the CHURCH Cloudflare account ffd360…, replacing
+// the live v1.0. Nothing here is deployed, rotated, or routed by this change.
+//
+// This candidate implements the D-3 sender policy and the correction list from
+// AUDIT_FINDINGS.md. Every exported function is unit-tested in test/corrected.test.mjs.
+//
+// Corrections vs v1.2 / v1.0:
+//   F-01  no hard-coded secret; env.INTAKE_SECRET only; FAIL CLOSED when unset.
+//   F-02  routing identity comes from TRUSTED inbound authentication + alignment,
+//         never the visible From alone. (D-3 #2,#3,#4,#5)
+//   F-03  deny-by-default staff allowlist (empty allowlist => accept nobody). (D-3 #1,#3)
+//   F-04  intent='check' requires a separate CHECK allowlist + authenticated sender;
+//         otherwise the check intent is REJECTED (never downgraded/rerouted). (D-3 #8,#9)
+//   F-05  strict type allow-set by CONTENT SNIFF; SVG and all active types rejected.
+//   F-06/F-07  bytes are sniffed; declared type/filename never decide the type.
+//   F-08  content-hash idempotency (+ optional KV fast-path); dedupe survives a new
+//         Message-ID for the same bytes.
+//   F-09  v1.0 raw-HTML body-capture REMOVED. No attachment => reject, store nothing. (D-3 #7,#10)
+//   F-13  downstream POST is retried with backoff and, on exhaustion, dead-lettered
+//         and re-thrown so the failure is VISIBLE. Retries are safe (idempotent).
+//   F-15  a raw read that hits the size cap is REJECTED, not silently truncated.
+//   Logging: safe metadata only — never receipt contents, sender local-part, or secrets.
+//
+// BINDINGS / VARS (set at deploy in the church account — HUMAN-GATED):
+//   Secret  INTAKE_SECRET        (required; no fallback)
+//   Var     RECEIPTS_URL         (downstream base; default below)
+//   Var     TRUSTED_AUTHSERV     (authserv-id of the trusted ingress; default mx.cloudflare.net)
+//   Var     STAFF_ALLOWLIST      (comma-separated EXACT staff addresses; empty => deny all)
+//   Var     CHECK_ALLOWLIST      (comma-separated EXACT addresses allowed to raise checks)
+//   Var     MAX_ATTACHMENT_BYTES (optional; default 12582912 = 12 MiB decoded)
+//   Var     MAX_MIME_PARTS       (optional; default 40)
+//   KV      DEDUPE_KV            (optional; replay fast-path; downstream unique index is authoritative)
+//   KV      DEADLETTER_KV        (optional; stores safe metadata for failed downstream posts)
+//   Queue   RETRY_QUEUE          (optional; if bound, failed posts are enqueued instead of thrown)
+
+export const DEFAULTS = {
+  RECEIPTS_URL: 'https://receipts.shanepass.workers.dev',
+  TRUSTED_AUTHSERV: 'mx.cloudflare.net',
+  MAX_ATTACHMENT_BYTES: 12 * 1024 * 1024,
+  MAX_MIME_PARTS: 40,
+  RAW_CAP_BYTES: 15 * 1024 * 1024,
+  SEEN_TTL_SECONDS: 60 * 60 * 24 * 21, // 21 days
+  MEMO_MAX: 300,
+  SUBJECT_MAX: 200,
+};
+
+export const ALLOWED_TYPES = new Set([
+  'application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/heic',
+]);
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status, headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+// ─── Header helpers ─────────────────────────────────────────────────────
+function headerBlock(raw) {
+  const blank = raw.search(/\r?\n\r?\n/);
+  const block = blank === -1 ? raw : raw.slice(0, blank);
+  return block.replace(/\r?\n[ \t]+/g, ' '); // unfold
+}
+
+export function getHeader(raw, name) {
+  const m = headerBlock(raw).match(new RegExp('^' + name + ':\\s*(.+)$', 'im'));
+  return m ? m[1].trim() : '';
+}
+
+// All values of a repeated header, top-to-bottom (order preserved).
+export function getAllHeaders(raw, name) {
+  const out = [];
+  const re = new RegExp('^' + name + ':\\s*(.+)$', 'gim');
+  let m;
+  const block = headerBlock(raw);
+  while ((m = re.exec(block)) !== null) out.push(m[1].trim());
+  return out;
+}
+
+export function extractSenderEmail(fromHeader) {
+  if (!fromHeader) return '';
+  const angle = fromHeader.match(/<([^>]+)>/);
+  if (angle) return angle[1].trim().toLowerCase();
+  const bare = fromHeader.match(/[\w.+-]+@[\w.-]+/);
+  return bare ? bare[0].trim().toLowerCase() : '';
+}
+
+export function domainOf(addr) {
+  const at = String(addr || '').lastIndexOf('@');
+  return at === -1 ? '' : addr.slice(at + 1).trim().toLowerCase().replace(/[>.\s]+$/, '');
+}
+
+// Relaxed domain alignment: equal, or one is a subdomain of the other.
+export function domainsAligned(a, b) {
+  a = String(a || '').toLowerCase().replace(/^\.+|\.+$/g, '');
+  b = String(b || '').toLowerCase().replace(/^\.+|\.+$/g, '');
+  if (!a || !b) return false;
+  return a === b || a.endsWith('.' + b) || b.endsWith('.' + a);
+}
+
+// ─── Trusted inbound authentication (D-3 #4,#5) ─────────────────────────
+// Only the FIRST Authentication-Results header is considered, and only if its
+// authserv-id equals the trusted ingress. Attacker-supplied Authentication-Results
+// lines (which appear BELOW the ingress-prepended one) are ignored. If the first
+// A-R line is not from the trusted authserv, there is NO trusted evidence.
+export function parseTrustedAuthResults(raw, trustedAuthserv) {
+  const all = getAllHeaders(raw, 'Authentication-Results');
+  if (all.length === 0) return { trusted: false, reason: 'no_auth_results' };
+  const first = all[0];
+  const authserv = (first.split(';')[0] || '').trim().toLowerCase();
+  if (authserv !== String(trustedAuthserv || '').toLowerCase()) {
+    return { trusted: false, reason: 'untrusted_authserv', authserv };
+  }
+  const grab = (re) => { const m = first.match(re); return m ? m[1].toLowerCase() : ''; };
+  return {
+    trusted: true,
+    authserv,
+    dmarc: grab(/\bdmarc=(\w+)/i),
+    dkim: {
+      result: grab(/\bdkim=(\w+)/i),
+      d: grab(/\bdkim=pass[^;]*?header\.d=([^\s;]+)/i),
+    },
+    spf: {
+      result: grab(/\bspf=(\w+)/i),
+      domain: grab(/\bspf=pass[^;]*?smtp\.(?:mailfrom|helo)=(?:[^@\s;]*@)?([^\s;]+)/i),
+    },
+  };
+}
+
+// Evaluate auth against the visible From domain (D-3 #4). DMARC pass is aligned by
+// definition; otherwise require an ALIGNED DKIM pass or ALIGNED SPF pass.
+export function evaluateAuth(ar, fromDomain) {
+  if (!ar || !ar.trusted) return { ok: false, method: 'none', reason: ar?.reason || 'no_trusted_auth' };
+  if (ar.dmarc === 'pass') return { ok: true, method: 'dmarc' };
+  if (ar.dkim?.result === 'pass' && domainsAligned(fromDomain, ar.dkim.d)) return { ok: true, method: 'dkim_aligned' };
+  if (ar.spf?.result === 'pass' && domainsAligned(fromDomain, ar.spf.domain)) return { ok: true, method: 'spf_aligned' };
+  return { ok: false, method: 'none', reason: 'auth_unaligned_or_failed' };
+}
+
+// ─── Allowlists (deny by default) ───────────────────────────────────────
+function parseList(v) {
+  return String(v || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+}
+export function isStaffAllowlisted(sender, env) {
+  const list = parseList(env.STAFF_ALLOWLIST);
+  if (list.length === 0) return false;            // deny by default (D-3 #1)
+  return list.includes(String(sender || '').toLowerCase());
+}
+export function isCheckAuthorized(sender, env) {
+  const list = parseList(env.CHECK_ALLOWLIST);
+  if (list.length === 0) return false;            // no check authority by default (D-3 #8,#9)
+  return list.includes(String(sender || '').toLowerCase());
+}
+
+// ─── Intent classification (unchanged triggers; authorization added later) ─
+export function detectIntent(toAddr, subject, memo) {
+  const local = String(toAddr || '').toLowerCase().split('@')[0];
+  if (local.includes('check') || local.includes('reimburse') || local.includes('payment')) return 'check';
+  const hay = ((subject || '') + ' ' + (memo || '')).toLowerCase();
+  if (/\bcheck request\b|\bcheck req\b|\bcut a check\b|\breimburse|\bcheck for\b|\bplease pay\b|\bpay to\b/.test(hay)) return 'check';
+  return 'receipt';
+}
+
+// ─── MIME parts + content sniff ─────────────────────────────────────────
+function mimeParts(raw, maxParts) {
+  const boundaries = new Set();
+  const bRe = /boundary\s*=\s*("([^"]+)"|([^\s;]+))/gi;
+  let bm;
+  while ((bm = bRe.exec(raw)) !== null) boundaries.add(bm[2] || bm[3]);
+  if (boundaries.size === 0) return [];
+  const delims = Array.from(boundaries).map(b => '--' + b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const chunks = raw.split(new RegExp('(?:' + delims.join('|') + ')', 'g'));
+  return chunks.slice(0, maxParts);
+}
+
+export function base64ToBytes(b64) {
+  const clean = String(b64 || '').replace(/[^A-Za-z0-9+/=]/g, '');
+  const bin = atob(clean);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+// Magic-byte sniff. Returns an ALLOWED type or null. SVG/HTML/text => null.
+export function sniffMediaType(bytes) {
+  if (!bytes || bytes.length < 12) return null;
+  const b = bytes;
+  const ascii = (i, s) => { for (let k = 0; k < s.length; k++) if (b[i + k] !== s.charCodeAt(k)) return false; return true; };
+  if (ascii(0, '%PDF')) return 'application/pdf';
+  if (b[0] === 0x89 && ascii(1, 'PNG')) return 'image/png';
+  if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return 'image/jpeg';
+  if (ascii(0, 'GIF8')) return 'image/gif';
+  if (ascii(0, 'RIFF') && ascii(8, 'WEBP')) return 'image/webp';
+  if (ascii(4, 'ftyp')) {
+    const brand = String.fromCharCode(b[8], b[9], b[10], b[11]).toLowerCase();
+    if (['heic', 'heix', 'hevc', 'heim', 'heis', 'mif1', 'msf1', 'heif'].includes(brand)) return 'image/heic';
+  }
+  return null;
+}
+
+// Extract the largest VALID attachment (sniffed ∈ allow-set, size ok). Returns
+// { ok, attachment } or { ok:false, reason }. Rejects on mismatch/oversize/none.
+export function selectValidAttachment(raw, env) {
+  const maxBytes = Number(env.MAX_ATTACHMENT_BYTES) || DEFAULTS.MAX_ATTACHMENT_BYTES;
+  const maxParts = Number(env.MAX_MIME_PARTS) || DEFAULTS.MAX_MIME_PARTS;
+  let best = null, sawCandidate = false, sawOversize = false, sawMismatch = false;
+
+  for (const chunk of mimeParts(raw, maxParts)) {
+    const headerEnd = chunk.search(/\r?\n\r?\n/);
+    if (headerEnd === -1) continue;
+    const headers = chunk.slice(0, headerEnd);
+    const ctMatch = headers.match(/Content-Type:\s*([^;\r\n]+)/i);
+    const declared = ctMatch ? ctMatch[1].trim().toLowerCase() : '';
+    const cteMatch = headers.match(/Content-Transfer-Encoding:\s*([^\r\n]+)/i);
+    const cte = (cteMatch ? cteMatch[1] : '').trim().toLowerCase();
+    const fnMatch = headers.match(/filename\s*=\s*("([^"]+)"|([^\s;]+))/i);
+    const filename = fnMatch ? (fnMatch[2] || fnMatch[3]) : '';
+
+    // Only base64 body parts that look like attachments (declared type or filename).
+    if (cte && cte !== 'base64') continue;
+    if (!declared && !filename) continue;
+    // Skip obvious text parts early (defense in depth; sniff is authoritative).
+    if (declared.startsWith('text/') || declared.startsWith('multipart/')) continue;
+
+    const b64 = chunk.slice(headerEnd).replace(/^[\r\n]+/, '').replace(/[^A-Za-z0-9+/=]/g, '');
+    if (b64.length < 24) continue;
+    sawCandidate = true;
+
+    let bytes;
+    try { bytes = base64ToBytes(b64); } catch (_) { continue; }
+    if (bytes.length === 0) continue;
+    if (bytes.length > maxBytes) { sawOversize = true; continue; }
+
+    const sniffed = sniffMediaType(bytes);
+    if (!sniffed) { sawMismatch = true; continue; }               // unsupported/active/mismatch (F-05/F-06)
+    // If a type was declared, its family must agree with the bytes (F-06/F-07).
+    if (declared && declared !== 'application/octet-stream') {
+      const declFamily = declared === 'image/jpg' ? 'image/jpeg' : declared;
+      if (declFamily !== sniffed) { sawMismatch = true; continue; }
+    }
+
+    if (!best || bytes.length > best.bytes.length) {
+      best = { bytes, content_type: sniffed, filename, size: bytes.length, b64 };
+    }
+  }
+
+  if (best) return { ok: true, attachment: best };
+  if (sawOversize) return { ok: false, reason: 'attachment_oversize' };
+  if (sawMismatch) return { ok: false, reason: 'unsupported_or_mismatched_content' };
+  if (sawCandidate) return { ok: false, reason: 'no_decodable_attachment' };
+  return { ok: false, reason: 'no_attachment' };
+}
+
+// ─── Typed-note (memo) extraction (forwarded only; never stored raw) ────
+function decodePart(body, cte) {
+  cte = (cte || '').toLowerCase();
+  if (cte === 'base64') {
+    try { return new TextDecoder('utf-8', { fatal: false }).decode(base64ToBytes(body)); }
+    catch (_) { return body; }
+  }
+  if (cte === 'quoted-printable') {
+    return body.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  }
+  return body;
+}
+export function extractPlainBody(raw, maxParts) {
+  for (const chunk of mimeParts(raw, maxParts || DEFAULTS.MAX_MIME_PARTS)) {
+    const he = chunk.search(/\r?\n\r?\n/);
+    if (he === -1) continue;
+    const headers = chunk.slice(0, he);
+    const ctM = headers.match(/Content-Type:\s*([^;\r\n]+)/i);
+    if (!ctM) continue;
+    if (ctM[1].trim().toLowerCase() === 'text/plain') {
+      const cteM = headers.match(/Content-Transfer-Encoding:\s*([^\r\n]+)/i);
+      return decodePart(chunk.slice(he).replace(/^[\r\n]+/, ''), cteM ? cteM[1] : '');
+    }
+  }
+  return '';
+}
+export function extractMemo(bodyText) {
+  if (!bodyText) return '';
+  let t = bodyText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const markers = [
+    /\n-{2,}\s*Forwarded message\s*-{2,}/i, /\nBegin forwarded message:/i,
+    /\nFrom:\s.+\nSent:/i, /\nFrom:\s.+\nDate:/i, /\nOn .{0,120}wrote:/i, /\n_{5,}/, /\n>\s?/,
+  ];
+  let cut = -1;
+  for (const re of markers) { const m = t.match(re); if (m && (cut === -1 || m.index < cut)) cut = m.index; }
+  let memo = (cut === -1 ? t : t.slice(0, cut)).split('\n').map(l => l.trim()).filter(Boolean).join(' ').trim();
+  return memo.replace(/^(fwd:|fw:|re:)\s*/i, '').trim().slice(0, DEFAULTS.MEMO_MAX);
+}
+
+// ─── Hashing / dedupe ───────────────────────────────────────────────────
+export async function sha256Hex(bytesOrString) {
+  const data = typeof bytesOrString === 'string' ? new TextEncoder().encode(bytesOrString) : bytesOrString;
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+// True if already seen (and records it if not). No KV bound => false (downstream
+// unique index is the authoritative guarantee against duplicate ledger writes).
+export async function seenBefore(env, key) {
+  if (!env.DEDUPE_KV || typeof env.DEDUPE_KV.get !== 'function') return false;
+  const hit = await env.DEDUPE_KV.get(key);
+  if (hit) return true;
+  await env.DEDUPE_KV.put(key, '1', { expirationTtl: DEFAULTS.SEEN_TTL_SECONDS });
+  return false;
+}
+
+// ─── Safe logging (no contents, no secrets, no local-parts) ─────────────
+export function safeLog(env, evt, fields = {}) {
+  try { console.log(JSON.stringify({ svc: 'receipts-email-intake', v: 'v2.0', evt, ...fields })); } catch (_) {}
+}
+
+// ─── Downstream post with bounded retry (visible, idempotent) ───────────
+export async function postWithRetry(env, payload, deps = {}) {
+  const fetchImpl = deps.fetchImpl || fetch;
+  const sleep = deps.sleep || ((ms) => new Promise(r => setTimeout(r, ms)));
+  const tries = deps.tries || 3;
+  const base = (env.RECEIPTS_URL || DEFAULTS.RECEIPTS_URL).replace(/\/$/, '');
+  let lastStatus = 0, lastErr = '';
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetchImpl(base + '/api/intake', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-intake-secret': env.INTAKE_SECRET },
+        body: JSON.stringify(payload),
+      });
+      if (res && res.ok) return { ok: true, attempts: i + 1 };
+      lastStatus = res ? res.status : 0;
+    } catch (e) { lastErr = String(e && e.message || e).slice(0, 120); }
+    if (i < tries - 1) await sleep(200 * Math.pow(2, i));
+  }
+  return { ok: false, attempts: tries, status: lastStatus, error: lastErr };
+}
+
+// ─── Read raw MIME, bounded; report truncation ──────────────────────────
+export async function readEmailRawBounded(message, cap = DEFAULTS.RAW_CAP_BYTES) {
+  const reader = message.raw.getReader();
+  const chunks = [];
+  let total = 0, truncated = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    total += value.byteLength;
+    if (total > cap) { truncated = true; break; }
+  }
+  const merged = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { merged.set(c, off); off += c.byteLength; }
+  return { raw: new TextDecoder('utf-8', { fatal: false }).decode(merged), truncated };
+}
+
+// ─── Main pipeline ──────────────────────────────────────────────────────
+// Returns a structured outcome (for tests/logging). Deployed handler ignores the
+// return but relies on it throwing to make downstream failure visible/retryable.
+export async function processEmail(message, env, ctx, deps = {}) {
+  // F-01: fail closed — no secret, no processing.
+  if (!env || !env.INTAKE_SECRET) {
+    safeLog(env || {}, 'reject', { reason: 'config_error_no_secret' });
+    return { outcome: 'error', reason: 'config_error_no_secret' };
+  }
+
+  const cap = Number(env.RAW_CAP_BYTES) || DEFAULTS.RAW_CAP_BYTES;
+  const { raw, truncated } = await readEmailRawBounded(message, cap);
+  const from = extractSenderEmail(getHeader(raw, 'From'));
+  const fromDomain = domainOf(from);
+  const subject = getHeader(raw, 'Subject');
+  const messageId = getHeader(raw, 'Message-ID');
+  const toAddr = message.to || '';
+  const senderDomain = fromDomain || 'unknown';
+
+  const reject = (reason) => { safeLog(env, 'reject', { reason, sender_domain: senderDomain }); return { outcome: 'reject', reason }; };
+
+  // F-15: truncated read => reject, store nothing.
+  if (truncated) return reject('oversized_message_truncated');
+
+  // D-3 #2,#3,#4,#5: trusted authentication + alignment (never From alone).
+  const ar = parseTrustedAuthResults(raw, env.TRUSTED_AUTHSERV || DEFAULTS.TRUSTED_AUTHSERV);
+  const auth = evaluateAuth(ar, fromDomain);
+  if (!auth.ok) return reject('auth_' + (auth.reason || 'failed'));
+
+  // D-3 #1,#3: deny-by-default staff allowlist + identity alignment already ensured.
+  if (!isStaffAllowlisted(from, env)) return reject('sender_not_allowlisted');
+
+  // F-09/D-3 #7,#10: attachment required; no raw-HTML body capture. Sniff-validated.
+  const sel = selectValidAttachment(raw, env);
+  if (!sel.ok) return reject(sel.reason);              // stores nothing
+  const att = sel.attachment;
+
+  // Intent + check authorization (D-3 #8,#9). Reject unauthorized checks; never downgrade.
+  const memo = (() => { try { return extractMemo(extractPlainBody(raw, Number(env.MAX_MIME_PARTS) || DEFAULTS.MAX_MIME_PARTS)); } catch (_) { return ''; } })();
+  const intent = detectIntent(toAddr, subject, memo);
+  if (intent === 'check' && !isCheckAuthorized(from, env)) return reject('check_not_authorized');
+
+  // F-08: content-hash idempotency (survives a new Message-ID for the same bytes).
+  const contentHash = await sha256Hex(att.bytes);
+  const dedupeKey = contentHash; // authoritative dedupe on bytes
+  if (await seenBefore(env, dedupeKey)) {
+    safeLog(env, 'duplicate_suppressed', { sender_domain: senderDomain, method: auth.method });
+    return { outcome: 'duplicate', reason: 'already_seen', dedupe_key: dedupeKey };
+  }
+
+  const payload = {
+    from_addr: from,
+    to_addr: toAddr,
+    intent,
+    subject: (subject || '').slice(0, DEFAULTS.SUBJECT_MAX),
+    memo,
+    filename: att.filename,
+    content_type: att.content_type,
+    image_base64: att.b64,
+    dedupe_key: dedupeKey,          // downstream: UNIQUE(dedupe_key) => no duplicate ledger writes
+    message_id: messageId,
+    auth: { verified: true, method: auth.method, authserv: ar.authserv },
+  };
+
+  // F-13: retry with backoff; on exhaustion dead-letter + make it visible (throw or enqueue).
+  const res = await postWithRetry(env, payload, deps);
+  if (!res.ok) {
+    const dl = { evt: 'deadletter', reason: 'downstream_post_failed', status: res.status, sender_domain: senderDomain, dedupe_key: dedupeKey, message_id_hash: await sha256Hex(messageId || dedupeKey) };
+    try { if (env.DEADLETTER_KV) await env.DEADLETTER_KV.put('dl:' + dedupeKey, JSON.stringify(dl), { expirationTtl: DEFAULTS.SEEN_TTL_SECONDS }); } catch (_) {}
+    try { if (env.RETRY_QUEUE) await env.RETRY_QUEUE.send(payload); } catch (_) {}
+    safeLog(env, 'deadletter', { reason: 'downstream_post_failed', status: res.status, sender_domain: senderDomain });
+    if (!env.RETRY_QUEUE) throw new Error('downstream_post_failed:' + res.status); // visible failure
+    return { outcome: 'deadletter', reason: 'downstream_post_failed', status: res.status };
+  }
+
+  safeLog(env, 'accepted', { sender_domain: senderDomain, method: auth.method, intent, content_type: att.content_type });
+  return { outcome: 'accepted', intent, dedupe_key: dedupeKey, auth_method: auth.method };
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname === '/health') {
+      return json({
+        ok: true,
+        service: 'receipts-email-intake',
+        version: 'v2.0',
+        secret_set: !!env.INTAKE_SECRET,
+        trusted_authserv: env.TRUSTED_AUTHSERV || DEFAULTS.TRUSTED_AUTHSERV,
+        staff_allowlist_size: parseList(env.STAFF_ALLOWLIST).length,
+        check_allowlist_size: parseList(env.CHECK_ALLOWLIST).length,
+        deny_by_default: parseList(env.STAFF_ALLOWLIST).length === 0,
+        dedupe_kv: !!env.DEDUPE_KV,
+        retry_queue: !!env.RETRY_QUEUE,
+      });
+    }
+    return json({ error: 'not found' }, 404);
+  },
+  async email(message, env, ctx) {
+    // Surface failures: do NOT wrap in a swallow. ctx.waitUntil keeps the async
+    // work alive; a thrown downstream failure is visible in Workers logs/metrics.
+    ctx.waitUntil(processEmail(message, env, ctx));
+  },
+};
