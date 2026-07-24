@@ -42,7 +42,7 @@ performed. Secret values are redacted everywhere.
 
 ## Reproduce the findings offline
 ```
-node --test workers/receipts-email-intake/test/intake.test.mjs
+node --test audits/receipts-email-intake/test/intake.test.mjs
 ```
 No network, no secrets, no live resources. Latest result: 12 pass / 0 fail
 ([`test/OUTPUT.txt`](test/OUTPUT.txt)).

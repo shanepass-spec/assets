@@ -1,5 +1,5 @@
 # SHA-256 checksums — receipts-email-intake audit artifacts
-# Generated 2026-07-24T07:18:06Z on branch claude/receipts-email-intake-audit-s8wb8p
+# Generated 2026-07-24T07:26:19Z on branch claude/receipts-email-intake-audit-s8wb8p
 #
 # NOTE: the two deployed/*.worker.js copies are REDACTED (fallback INTAKE_SECRET
 #       literal replaced with a placeholder). Their checksums therefore describe
@@ -8,5 +8,5 @@
 1fb47805812a138d3e32a7e9c8aab96677c04999f2aea898ebbf43996f473ff9  deployed/church-account-v1.0.worker.js
 ad606437b9ca42f94ef10590df02989b8a415a98a3a0822883c38735a8074887  deployed/personal-account-v1.2.worker.js
 5c80e69f317558a069264276dab147c641bfbece7ef322467888519900736f2c  test/harness.mjs
-45bffb1a1447508f4fe72badb16b20db8ad30bfa6f0beeb96eb62468acadb487  test/intake.test.mjs
-8be716bb061bf5a87eadb4a0c97cc44fa9e43eed4bd75e1328d0fc626df648e4  test/OUTPUT.txt
+43ec755530ab08a5b594d0b390f1ce8aa7d3ee024505fff10f015165faf97cba  test/intake.test.mjs
+c7d00136684cf79c77073b58651c0d537e5b15ae041e38a6ae4ee844863102b2  test/OUTPUT.txt

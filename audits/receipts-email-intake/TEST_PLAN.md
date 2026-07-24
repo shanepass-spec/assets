@@ -2,7 +2,7 @@
 
 ## How to run (offline, no network, no live resources)
 ```
-node --test workers/receipts-email-intake/test/intake.test.mjs
+node --test audits/receipts-email-intake/test/intake.test.mjs
 ```
 Node ≥ 18 (validated on v22.22.2). Uses only built-in globals (`atob`,
 `TextDecoder`, `Buffer`). No Cloudflare, no live email, no secrets.

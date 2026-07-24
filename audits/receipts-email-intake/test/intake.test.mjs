@@ -1,5 +1,5 @@
 // intake.test.mjs — offline reproduction of receipts-email-intake audit findings.
-// Run: node --test workers/receipts-email-intake/test/
+// Run: node --test audits/receipts-email-intake/test/
 // Each test PROVES a finding by exercising the deployed logic (see harness.mjs).
 // A passing test == the vulnerable/observed behavior reproduced as described in
 // AUDIT_FINDINGS.md. Test names are tagged with the finding id.
