@@ -17,7 +17,12 @@ on:
 # that receives email must live there.
 env:
   CHURCH_ACCOUNT_ID: ffd360b239936d51e85d9961fdaeb65a
-  CHURCH_WORKERS: tab-email-ingest
+  CHURCH_WORKERS: tab-email-ingest,tab-curriculum,tab-curriculum-upload
+  # Workers that live ONLY on the church account. The personal-account deploy
+  # job skips these so it never creates a stray, R2-unbound copy on the
+  # personal account. (tab-email-ingest is deliberately NOT listed here to
+  # preserve its existing dual-deploy behavior.)
+  CHURCH_ONLY_WORKERS: tab-curriculum,tab-curriculum-upload
 
 jobs:
   detect:
@@ -73,6 +78,13 @@ jobs:
           # SAFETY GUARD: tabready is deployed only via the gated workflow.
           if [ "$WORKER" = "tabready" ]; then
             echo "⛔ tabready must deploy via tabready-v2.9.290-gated-deploy.yml — refusing auto-deploy."
+            exit 0
+          fi
+
+          # Church-ONLY workers must not deploy to the personal account (they
+          # have no bindings there). The deploy-church job handles them.
+          if echo ",${{ env.CHURCH_ONLY_WORKERS }}," | grep -q ",$WORKER,"; then
+            echo "⏭️  $WORKER is a church-only worker — skipping personal-account deploy."
             exit 0
           fi
 
