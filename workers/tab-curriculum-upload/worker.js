@@ -71,6 +71,82 @@ function ctFor(key) {
   return "application/octet-stream";
 }
 
+// Derive a Season_YYYY folder from the manifest's display_title (preferred,
+// e.g. "Fall 2026 Sunday School") or its quarter_id (e.g. "2026_Q3").
+function seasonFromManifest(manifest) {
+  var dt = String(manifest.display_title || "");
+  var m = dt.match(/(Winter|Spring|Summer|Fall)\s+(\d{4})/i);
+  if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase() + "_" + m[2];
+  var q = String(manifest.quarter_id || manifest.season || "");
+  var qm = q.match(/(\d{4})[_\- ]?Q([1-4])/i);
+  if (qm) { var map = { "1": "Winter", "2": "Spring", "3": "Summer", "4": "Fall" }; return map[qm[2]] + "_" + qm[1]; }
+  var direct = String(manifest.season || manifest.season_folder || manifest.target || manifest.folder || "").replace(/\/+$/, "");
+  return SEASON_RE.test(direct) ? direct : "";
+}
+
+function audienceToLane(a) {
+  a = String(a || "").toLowerCase();
+  if (a.indexOf("senior") >= 0) return "senior_adult_leader";
+  if (a.indexOf("daily") >= 0 || a.indexOf("ddg") >= 0 || a.indexOf("discipleship") >= 0) return "daily_discipleship";
+  if (a.indexOf("adult") >= 0) return "adult_leader";
+  return "";
+}
+
+function roleLabel(r) {
+  r = String(r || "").toLowerCase();
+  if (r === "teacher") return "Teacher";
+  if (r === "learner") return "Learner";
+  return "";
+}
+
+// Turn a package manifest into { season, index } where index is the shape the
+// viewer renders. Supports the TabReady import format (quarter_id + items[])
+// and a generic ready-made index (season + lessons + files). Returns
+// { error } if it can't map — the caller surfaces that instead of guessing.
+function buildFromManifest(manifest, warnings) {
+  // --- TabReady import format: quarter_id + items[] ---
+  if (Array.isArray(manifest.items)) {
+    var season = seasonFromManifest(manifest);
+    if (!SEASON_RE.test(season)) {
+      return { error: "Couldn't work out the season folder from the manifest's display_title or quarter_id (expected something like \"Fall 2026\" or \"2026_Q3\")." };
+    }
+    var lessonsMap = {};
+    var files = [];
+    for (var i = 0; i < manifest.items.length; i++) {
+      var it = manifest.items[i];
+      var wk = (it.session_number != null) ? it.session_number : it.session_index;
+      if (wk == null) { warnings.push("An item had no session number and was skipped."); continue; }
+      var lane = audienceToLane(it.audience);
+      if (!lane) { warnings.push("Skipped an item with an unrecognized audience: \"" + it.audience + "\"."); continue; }
+      var pathKey = it.r2_key || it.file_path;
+      if (!pathKey) { warnings.push("An item had no file path and was skipped."); continue; }
+      if (!lessonsMap[wk]) {
+        lessonsMap[wk] = { week: wk, week_label: "Session " + wk, display_date: it.display_date || "", title: it.title || "", focal_passage: it.focal_passage || "" };
+      }
+      var role = String(it.file_role || "").toLowerCase();
+      files.push({ lane: lane, week: wk, path: pathKey, role: role || undefined, label: roleLabel(it.file_role) || undefined });
+    }
+    var lessons = Object.keys(lessonsMap).map(function (k) { return lessonsMap[k]; }).sort(function (a, b) { return a.week - b.week; });
+    if (!files.length) return { error: "The manifest's items didn't yield any publishable files." };
+    return { season: season, index: { display_title: manifest.display_title || season.replace("_", " "), quarter_id: manifest.quarter_id, lessons: lessons, files: files } };
+  }
+
+  // --- Generic ready-made index: season + lessons + files (or an "index") ---
+  var gSeason = seasonFromManifest(manifest);
+  if (!SEASON_RE.test(gSeason)) {
+    return { error: "The manifest doesn't name a season folder to publish into. Add a \"season\" like \"Fall_2026\"." };
+  }
+  var gIndex = null;
+  if (manifest.index && typeof manifest.index === "object") gIndex = manifest.index;
+  else if (Array.isArray(manifest.lessons) && Array.isArray(manifest.files)) {
+    gIndex = { display_title: manifest.display_title || gSeason.replace("_", " "), lessons: manifest.lessons, files: manifest.files };
+  }
+  if (!gIndex || !Array.isArray(gIndex.files)) {
+    return { error: "The manifest doesn't contain the lessons/files list the teacher view needs (expected \"items\", or \"lessons\" + \"files\", or an \"index\" object)." };
+  }
+  return { season: gSeason, index: gIndex };
+}
+
 async function listAll(env, prefix) {
   var out = [];
   var cursor = undefined;
@@ -149,25 +225,14 @@ async function planOrPublish(env, url) {
   try { manifest = JSON.parse(await mobj.text()); }
   catch (e) { return j({ ok: false, stage: "manifest", error: "The manifest isn't valid JSON: " + e }, 422); }
 
-  // 4. Which live quarter does it target?
-  var season = String(manifest.season || manifest.season_folder || manifest.target || manifest.folder || "").replace(/\/+$/, "");
-  if (!SEASON_RE.test(season)) {
-    return j({ ok: false, stage: "manifest",
-      error: "The manifest doesn't name a season folder to publish into. Add a \"season\" like \"Fall_2026\".",
+  // 4 + 5. Determine the target quarter folder and build the viewer index.
+  var built = buildFromManifest(manifest, warnings);
+  if (built.error) {
+    return j({ ok: false, stage: "manifest", error: built.error,
       manifest_top_level_keys: Object.keys(manifest) }, 422);
   }
-
-  // 5. The viewer index (lessons + files). Accept a ready-made index or build one.
-  var index = null;
-  if (manifest.index && typeof manifest.index === "object") index = manifest.index;
-  else if (Array.isArray(manifest.lessons) && Array.isArray(manifest.files)) {
-    index = { display_title: manifest.display_title || season.replace("_", " "), lessons: manifest.lessons, files: manifest.files };
-  }
-  if (!index || !Array.isArray(index.files)) {
-    return j({ ok: false, stage: "manifest",
-      error: "The manifest doesn't contain the lessons/files list the teacher view needs (expected \"lessons\" and \"files\", or an \"index\" object).",
-      manifest_top_level_keys: Object.keys(manifest) }, 422);
-  }
+  var season = built.season;
+  var index = built.index;
 
   // 6. Resolve each referenced file to a staged object, and plan the copy.
   var manifestDir = manifestKey.slice(0, manifestKey.length - "manifest.json".length); // trailing "/"

@@ -93,11 +93,16 @@ function renderSeason(season, manifest, base) {
   const lessons = manifest.lessons || [];
   const files = manifest.files || [];
 
-  // Map lane -> {week -> path}
+  // Map lane -> {week -> [file, ...]}. An array so a lane can carry more than
+  // one guide per week (e.g. a Teacher packet AND a Learner guide). Older
+  // manifests with a single file per lane/week still work — the array just
+  // holds one entry and renders as a plain "Open".
   const laneMap = {};
   for (const f of files) {
+    if (f.week == null) continue;
     if (!laneMap[f.lane]) laneMap[f.lane] = {};
-    if (f.week != null) laneMap[f.lane][f.week] = f.path;
+    if (!laneMap[f.lane][f.week]) laneMap[f.lane][f.week] = [];
+    laneMap[f.lane][f.week].push(f);
   }
 
   // READ ME (schedule lane)
@@ -115,9 +120,9 @@ function renderSeason(season, manifest, base) {
     rows += `<tr>
       <td class="wk">${esc(l.week_label || ('Week ' + l.week))}<span class="dt">${esc(l.display_date || '')}</span></td>
       <td class="ti">${esc(l.title || '')}<span class="fp">${esc(l.focal_passage || '')}</span></td>
-      <td class="dl">${trackLink(base, season, adult)}</td>
-      <td class="dl">${trackLink(base, season, senior)}</td>
-      <td class="dl">${trackLink(base, season, ddg)}</td>
+      <td class="dl">${trackCell(base, season, adult)}</td>
+      <td class="dl">${trackCell(base, season, senior)}</td>
+      <td class="dl">${trackCell(base, season, ddg)}</td>
     </tr>`;
   }
 
@@ -136,9 +141,28 @@ function renderSeason(season, manifest, base) {
   </section>`;
 }
 
-function trackLink(base, season, path) {
+function trackCell(base, season, entries) {
+  if (!entries || !entries.length) return '<span class="na">—</span>';
+  // A single unlabeled guide renders as a plain "Open" (unchanged behavior).
+  if (entries.length === 1 && !entries[0].role && !entries[0].label) {
+    return trackLink(base, season, entries[0].path);
+  }
+  // Otherwise label each guide (e.g. Teacher / Learner).
+  return entries
+    .map(f => trackLink(base, season, f.path, f.label || labelForRole(f.role)))
+    .join(' ');
+}
+
+function labelForRole(role) {
+  const r = String(role || '').toLowerCase();
+  if (r === 'teacher') return 'Teacher';
+  if (r === 'learner') return 'Learner';
+  return 'Open';
+}
+
+function trackLink(base, season, path, label) {
   if (!path) return '<span class="na">—</span>';
-  return `<a href="${base}/${encodePath(season + '/' + path)}" target="_blank">Open</a>`;
+  return `<a href="${base}/${encodePath(season + '/' + path)}" target="_blank">${esc(label || 'Open')}</a>`;
 }
 
 function encodePath(p) {
@@ -197,9 +221,9 @@ function pageShell(body) {
   .wk { white-space:nowrap; font-weight:600; }
   .wk .dt { display:block; font-weight:400; font-size:.78rem; opacity:.7; }
   .ti .fp { display:block; font-size:.78rem; opacity:.7; }
-  .dl a { display:inline-block; padding:5px 12px; background:var(--send);
-    color:var(--brown); border-radius:6px; text-decoration:none;
-    font-weight:600; font-size:.82rem; }
+  .dl a { display:inline-block; padding:5px 12px; margin:2px 4px 2px 0;
+    background:var(--send); color:var(--brown); border-radius:6px;
+    text-decoration:none; font-weight:600; font-size:.82rem; }
   .dl a:hover { opacity:.85; }
   .na { color:#bbb; }
   .empty { color:var(--cross); font-style:italic; }
