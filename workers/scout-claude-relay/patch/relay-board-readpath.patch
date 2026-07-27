@@ -1,0 +1,224 @@
+# relay-board-readpath.patch
+#
+# Target: scout-claude-relay worker (personal account), baseline VERSION 1.17.0.
+# Apply MANUALLY to a locally redacted snapshot of the worker (see APPLY.md), then
+# deploy via the project's control-plane-first path. HUMAN-GATED: deploy, routes, prod verify.
+#
+# This patch touches ONLY read-path handlers/helpers. It contains NO credentials:
+# every changed region is far from the worker's embedded-secret block (see SECURITY-NOTE.md).
+# Anchors are real lines from the v1.17.0 source; the `export` keyword is omitted because
+# the worker's top-level helpers are plain declarations (the exported twin lives in
+# relay-board-readpath.logic.mjs, kept identical for the tests).
+
+--- a/scout-claude-relay/worker.js   (VERSION 1.17.0)
++++ b/scout-claude-relay/worker.js   (VERSION 1.18.0)
+
+@@ VERSION bump (line ~58) @@
+-const VERSION = "1.17.0"; // v1.16.0: ADDITIVE Relay waker/dispatcher. [...existing comment retained...]
++const VERSION = "1.18.0"; // v1.18.0: board read-path fix — status normalization (verified-*
++// terminal), lean board columns (no SELECT *), terminal-residual retention on /board,
++// new paginated /archive + /relay/archive, hard page caps. Read-path only; no schema/row change.
++// Prior: v1.17.0: /relay/board index [...existing comment retained...]
+
+@@ replace bucketFor() and add read-path helpers + SQL (lines ~142-150) @@
+-// v1.8.0 — normalize a status string into a board bucket
+-function bucketFor(status) {
+-  const s = String(status == null ? "" : status).trim().toLowerCase();
+-  if (s === "parked") return "parked";
+-  if (s === "blocked") return "blocked";
+-  if (s === "done" || s === "closed" || s === "complete" || s === "completed" || s === "verified") return "done";
+-  if (s === "active" || s === "open" || s === "in_progress" || s === "in progress" || s === "") return "active";
+-  return "other";
+-}
++// v1.18.0 — read-path tunables
++const TERMINAL_RETENTION_DAYS = 30; // terminal rows younger than this stay on /board
++const BOARD_HARD_CAP = 200;         // absolute max rows any board read returns
++const ARCHIVE_PAGE_DEFAULT = 25;    // default /archive page size
++const ARCHIVE_PAGE_MAX = 100;       // hard max /archive page size
++const TERMINAL_EXACT = ["done", "closed", "complete", "completed", "verified"];
++const BOARD_LEAN_COLS = ["id", "project", "status", "next_actor", "updated_at", "shane_needed_only_for"];
++
++// v1.18.0 — normalize a status: lowercase, trim, unify separators ('_' -> '-').
++function normStatus(status) {
++  return String(status == null ? "" : status).trim().toLowerCase().replace(/_/g, "-");
++}
++// Terminal = finished work: the exact set plus ANY "verified-*" spelling.
++function isTerminal(status) {
++  const s = normStatus(status);
++  if (TERMINAL_EXACT.indexOf(s) !== -1) return true;
++  if (s === "verified" || s.indexOf("verified-") === 0) return true;
++  return false;
++}
++function bucketFor(status) {
++  const s = normStatus(status);
++  if (s === "parked") return "parked";
++  if (s === "blocked") return "blocked";
++  if (isTerminal(s)) return "done";
++  if (s === "active" || s === "open" || s === "in-progress" || s === "in progress" || s === "") return "active";
++  return "other";
++}
++// "populated / actionable" — same intent as the worker's existing isRealGate();
++// you may reuse isRealGate(v) here instead of isPopulated.
++const _EMPTY_MARKERS = ["", "none", "none.", "-", "—", "n/a", "nothing", "nothing."];
++function isPopulated(v) { return _EMPTY_MARKERS.indexOf(String(v == null ? "" : v).trim().toLowerCase()) === -1; }
++function hasLiveActor(row) {
++  const na = String(row.next_actor == null ? "" : row.next_actor).trim().toLowerCase();
++  return na !== "" && na !== "none";
++}
++function hasResidual(row) { return hasLiveActor(row) || isPopulated(row.shane_needed_only_for); }
++function withinDays(updated_at, days, nowMs) {
++  if (!updated_at) return false;
++  const t = Date.parse(String(updated_at).replace(" ", "T") + "Z"); // relay_state ts are UTC
++  if (isNaN(t)) return false;
++  return (nowMs - t) <= days * 86400000;
++}
++// Non-terminal rows are always live; terminal rows are live only while they carry
++// residual ownership or were updated within the retention window.
++function boardEligible(row, nowMs) {
++  if (!isTerminal(row.status)) return true;
++  return hasResidual(row) || withinDays(row.updated_at, TERMINAL_RETENTION_DAYS, nowMs);
++}
++function clampLimit(raw, dflt, max) { const n = parseInt(raw, 10); if (!n || n < 1) return dflt; return n > max ? max : n; }
++
++// SQL mirrors of the above (filtering + pagination in the DB). NS = normalized status.
++const _NS = "REPLACE(LOWER(TRIM(status)),'_','-')";
++const _TERMINAL_PRED = "(" + _NS + " IN ('done','closed','complete','completed','verified') OR " + _NS + " LIKE 'verified-%')";
++const _RESIDUAL_PRED = "((LOWER(TRIM(COALESCE(next_actor,''))) NOT IN ('','none')) OR (LOWER(TRIM(COALESCE(shane_needed_only_for,''))) NOT IN ('','none','none.','-','—','n/a','nothing','nothing.')))";
++const SQL_BOARD_ELIGIBLE = "SELECT " + BOARD_LEAN_COLS.join(", ") + " FROM relay_state WHERE (NOT " + _TERMINAL_PRED + ") OR " + _RESIDUAL_PRED + " OR (updated_at >= datetime('now', ?)) ORDER BY updated_at DESC, id DESC LIMIT ?";
++const SQL_BUCKET_COUNTS = "SELECT CASE WHEN " + _NS + " = 'parked' THEN 'parked' WHEN " + _NS + " = 'blocked' THEN 'blocked' WHEN " + _NS + " IN ('done','closed','complete','completed','verified') OR " + _NS + " LIKE 'verified-%' THEN 'done' WHEN " + _NS + " IN ('active','open','in-progress','in progress','') THEN 'active' ELSE 'other' END AS bucket, COUNT(*) AS n FROM relay_state GROUP BY bucket";
++const SQL_ARCHIVE = "SELECT " + BOARD_LEAN_COLS.join(", ") + " FROM relay_state WHERE " + _TERMINAL_PRED + " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?";
++const SQL_ARCHIVE_COUNT = "SELECT COUNT(*) AS n FROM relay_state WHERE " + _TERMINAL_PRED;
++const SQL_BOARD_VIEW = "SELECT id, project, status, next_actor, updated_at, substr(COALESCE(shane_needed_only_for,''),1,400) AS shane_needed_only_for, substr(COALESCE(shane_read,''),1,600) AS shane_read, approval_required, proof_required, substr(COALESCE(next_safe_action,''),1,600) AS next_safe_action, substr(COALESCE(latest_builder_status,''),1,800) AS latest_builder_status, substr(COALESCE(handoff_note,''),1,600) AS handoff_note FROM relay_state WHERE (NOT " + _TERMINAL_PRED + ") OR " + _RESIDUAL_PRED + " OR (updated_at >= datetime('now', ?)) ORDER BY updated_at DESC, id DESC LIMIT ?";
++const _RETENTION_BIND = "-" + TERMINAL_RETENTION_DAYS + " days";
+
+@@ replace handleRelayBoard() — JSON /relay/board (lines ~449-496) @@
+-async function handleRelayBoard(request, env) {
+-  if (!env.COMPASS_DB) return jsonR({ ok: false, error: "COMPASS_DB binding not set" }, 500);
+-  const url = new URL(request.url);
+-  const full = url.searchParams.get("full") === "1";
+-  const wantId = (url.searchParams.get("id") || "").trim();
+-  const wantStatus = (url.searchParams.get("status") || "").trim().toLowerCase();
+-  let cap = parseInt(url.searchParams.get("cap") || "", 10);
+-  if (!cap || cap < 40 || cap > 4000) cap = BOARD_CAP;
+-  const q = await env.COMPASS_DB.prepare("SELECT * FROM relay_state ORDER BY updated_at DESC, id DESC").all();
+-  const rows = q.results || [];
+-  const board = { active: [], parked: [], blocked: [], done: [], other: [] };
+-  for (const r of rows) { board[bucketFor(r.status)].push(r); }
+-  const counts = { active: board.active.length, parked: board.parked.length, blocked: board.blocked.length, done: board.done.length, other: board.other.length };
+-  if (wantId) { /* one whole row */ }
+-  if (full) { /* pre-v1.17 full dump */ }
+-  /* ...index view over SELECT * ... */
+-}
++async function handleRelayBoard(request, env) {
++  if (!env.COMPASS_DB) return jsonR({ ok: false, error: "COMPASS_DB binding not set" }, 500);
++  const url = new URL(request.url);
++  const wantId = (url.searchParams.get("id") || "").trim();
++  if (wantId) { // one whole row — the only full-detail escape hatch, bounded to 1 row
++    const one = await env.COMPASS_DB.prepare("SELECT * FROM relay_state WHERE id = ? LIMIT 1").bind(Number(wantId)).first();
++    if (!one) return jsonR({ ok: false, error: "No board row with id " + wantId }, 404);
++    return jsonR({ ok: true, version: VERSION, mode: "row", row: one });
++  }
++  const wantStatus = (url.searchParams.get("status") || "").trim().toLowerCase();
++  const limit = clampLimit(url.searchParams.get("limit"), BOARD_HARD_CAP, BOARD_HARD_CAP);
++  const countRes = await env.COMPASS_DB.prepare(SQL_BUCKET_COUNTS).all();
++  const counts = { active: 0, blocked: 0, parked: 0, done: 0, other: 0 };
++  for (const c of (countRes.results || [])) counts[c.bucket] = c.n;
++  const q = await env.COMPASS_DB.prepare(SQL_BOARD_ELIGIBLE).bind(_RETENTION_BIND, limit).all();
++  const rows = q.results || [];
++  const board = { active: [], blocked: [], parked: [], done: [], other: [] };
++  for (const r of rows) { const b = bucketFor(r.status); if (wantStatus && b !== wantStatus) continue; board[b].push(r); }
++  return jsonR({
++    ok: true, version: VERSION, mode: wantStatus ? ("bucket:" + wantStatus) : "index",
++    counts: counts, rows_returned: rows.length, limit: limit, hard_cap: BOARD_HARD_CAP,
++    fields_returned: BOARD_LEAN_COLS, retention_days: TERMINAL_RETENTION_DAYS,
++    note: "Live board: non-terminal rows plus terminal rows that still have a next_actor, a Shane gate, or an update within " + TERMINAL_RETENTION_DAYS + " days. All terminal history is at /relay/archive. One full row: ?id=N. One bucket: ?status=active.",
++    board: board
++  });
++}
++// NOTE: the old ?full=1 unbounded dump and BOARD_CORE/BOARD_CAP/BOARD_DONE_LIMIT/boardTrim/boardCore
++// (v1.17.0 helpers) are removed — full history now lives at the paginated /relay/archive.
+
+@@ new: handleRelayArchive() — JSON /relay/archive (add near handleRelayBoard) @@
++async function handleRelayArchive(request, env) {
++  if (!env.COMPASS_DB) return jsonR({ ok: false, error: "COMPASS_DB binding not set" }, 500);
++  const url = new URL(request.url);
++  const limit = clampLimit(url.searchParams.get("limit"), ARCHIVE_PAGE_DEFAULT, ARCHIVE_PAGE_MAX);
++  let page = parseInt(url.searchParams.get("page") || "1", 10); if (!page || page < 1) page = 1;
++  const offset = (page - 1) * limit;
++  const totalRow = await env.COMPASS_DB.prepare(SQL_ARCHIVE_COUNT).first();
++  const total = totalRow ? totalRow.n : 0;
++  const q = await env.COMPASS_DB.prepare(SQL_ARCHIVE).bind(limit, offset).all();
++  const rows = q.results || [];
++  return jsonR({ ok: true, version: VERSION, mode: "archive", total: total, page: page, limit: limit,
++    pages: Math.max(1, Math.ceil(total / limit)), has_more: offset + rows.length < total,
++    fields_returned: BOARD_LEAN_COLS, rows: rows });
++}
+
+@@ replace handleBoardView() — HTML /board (lines ~500-508) @@
+-async function handleBoardView(request, env) {
+-  if (!env.COMPASS_DB) return new Response("COMPASS_DB binding missing", { status: 500 });
+-  const q = await env.COMPASS_DB.prepare("SELECT * FROM relay_state ORDER BY updated_at DESC, id DESC").all();
+-  const rows = q.results || [];
+-  const board = { active: [], blocked: [], parked: [], done: [], other: [] };
+-  for (const r of rows) { board[bucketFor(r.status)].push(r); }
+-  const canWrite = checkKey(request, env);
+-  return new Response(boardViewHTML(board, rows.length, canWrite), { headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store" } });
+-}
++async function handleBoardView(request, env) {
++  if (!env.COMPASS_DB) return new Response("COMPASS_DB binding missing", { status: 500 });
++  const url = new URL(request.url);
++  const limit = clampLimit(url.searchParams.get("limit"), BOARD_HARD_CAP, BOARD_HARD_CAP);
++  const countRes = await env.COMPASS_DB.prepare(SQL_BUCKET_COUNTS).all();
++  const counts = { active: 0, blocked: 0, parked: 0, done: 0, other: 0 };
++  for (const c of (countRes.results || [])) counts[c.bucket] = c.n;
++  const total = counts.active + counts.blocked + counts.parked + counts.done + counts.other;
++  const q = await env.COMPASS_DB.prepare(SQL_BOARD_VIEW).bind(_RETENTION_BIND, limit).all();
++  const rows = q.results || [];
++  const board = { active: [], blocked: [], parked: [], done: [], other: [] };
++  for (const r of rows) board[bucketFor(r.status)].push(r);
++  const canWrite = checkKey(request, env);
++  return new Response(boardViewHTML(board, total, canWrite, counts), { headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store" } });
++}
+
+@@ new: handleArchiveView() — HTML /archive (self-contained; reuses boardSectionHTML/boardCardHTML) @@
++async function handleArchiveView(request, env) {
++  if (!env.COMPASS_DB) return new Response("COMPASS_DB binding missing", { status: 500 });
++  const url = new URL(request.url);
++  const limit = clampLimit(url.searchParams.get("limit"), ARCHIVE_PAGE_DEFAULT, ARCHIVE_PAGE_MAX);
++  let page = parseInt(url.searchParams.get("page") || "1", 10); if (!page || page < 1) page = 1;
++  const offset = (page - 1) * limit;
++  const totalRow = await env.COMPASS_DB.prepare(SQL_ARCHIVE_COUNT).first();
++  const total = totalRow ? totalRow.n : 0;
++  const q = await env.COMPASS_DB.prepare(SQL_ARCHIVE).bind(limit, offset).all();
++  const rows = q.results || [];
++  const canWrite = checkKey(request, env);
++  const pages = Math.max(1, Math.ceil(total / limit));
++  let nav = "<div style='margin:14px'>";
++  if (page > 1) nav += "<a href='/archive?page=" + (page - 1) + "&limit=" + limit + "'>&larr; Newer</a> ";
++  nav += "<span>Page " + page + " of " + pages + " &middot; " + total + " terminal rows</span>";
++  if (offset + rows.length < total) nav += " <a href='/archive?page=" + (page + 1) + "&limit=" + limit + "'>Older &rarr;</a>";
++  nav += " &middot; <a href='/board'>&larr; Back to board</a></div>";
++  const section = boardSectionHTML("Archive", "🗄️", "done", rows, canWrite);
++  const html = "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
++    + "<div class='top'><h1>Archive</h1><div class='sub'>All terminal history &middot; newest first</div></div>"
++    + nav + section + nav;
++  return new Response(html, { headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store" } });
++}
++// If you want the archive page to share the board's CSS, factor the <style> block out of
++// boardViewHTML into a shared const and include it here. Functional without it.
+
+@@ boardViewHTML(): accept true counts + add an /archive link (lines ~562-565) @@
+-function boardViewHTML(board, total, canWrite) {
++function boardViewHTML(board, total, canWrite, counts) {
+   const active = board.active || [], blocked = board.blocked || [], parked = board.parked || [], done = board.done || [], other = board.other || [];
+   const now = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
+   let sections = "";
++  // Live board shows a bounded set; full terminal history lives at /archive.
++  sections += "<div style='margin:14px 14px 0'><a href='/archive'>🗄️ View archive (all terminal rows)</a></div>";
+
+@@ router: add /archive and /relay/archive (after the /board route, line ~1822) @@
+   if (path === "/relay/board" && request.method === "GET") return await handleRelayBoard(request, env);
++  if (path === "/relay/archive" && request.method === "GET") return await handleRelayArchive(request, env);
+   if (path === "/relay/proof" && request.method === "GET") return await handleRelayProof(request, env);
+   if ((path === "/board" || path === "/relay/board-view") && request.method === "GET") return await handleBoardView(request, env);
++  if (path === "/archive" && request.method === "GET") return await handleArchiveView(request, env);
