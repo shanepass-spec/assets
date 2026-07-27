@@ -204,6 +204,9 @@ function pageShell(body) {
   .na { color:#bbb; }
   .empty { color:var(--cross); font-style:italic; }
   footer { text-align:center; padding:20px; font-size:.8rem; opacity:.6; }
+  footer .staff-link { display:inline-block; margin-top:8px; color:var(--cross);
+    text-decoration:none; font-weight:600; opacity:.85; }
+  footer .staff-link:hover { opacity:1; }
 </style>
 </head>
 <body>
@@ -218,7 +221,10 @@ function pageShell(body) {
 </a>
 ${body}
 </main>
-<footer>The Tabernacle Church · Sarasota, FL</footer>
+<footer>
+  The Tabernacle Church · Sarasota, FL
+  <br><a class="staff-link" href="https://tab-curriculum-upload.media-ffd.workers.dev/">🔒 Staff: upload or publish curriculum →</a>
+</footer>
 </body>
 </html>`;
 }
