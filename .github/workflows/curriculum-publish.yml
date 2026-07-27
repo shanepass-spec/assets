@@ -1,0 +1,82 @@
+name: Curriculum — Review / Publish
+
+# Ops helper: drive the tab-curriculum-upload manager from a GitHub runner
+# (which can reach the church workers.dev domain). Use it to inspect what's
+# staged and to publish a staged quarter live for teachers.
+#
+# Run with do_publish=false first to see the manifest + plan in the logs.
+# Then run with do_publish=true to actually publish.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'Staging folder to publish from'
+        required: false
+        default: '_incoming'
+      do_publish:
+        description: 'Actually publish? (false = review only)'
+        type: boolean
+        required: false
+        default: false
+      replace:
+        description: 'Overwrite an already-published / protected quarter'
+        type: boolean
+        required: false
+        default: false
+      allow_missing:
+        description: 'Publish even if some referenced files are missing'
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Review / publish
+        env:
+          BASE: https://tab-curriculum-upload.media-ffd.workers.dev
+          SRC: ${{ inputs.source }}
+          DO_PUBLISH: ${{ inputs.do_publish }}
+          REPLACE: ${{ inputs.replace }}
+          ALLOW_MISSING: ${{ inputs.allow_missing }}
+        run: |
+          set -euo pipefail
+          # The access code lives in the worker source already committed here.
+          T=$(grep -oE 'var TOKEN = "[^"]+"' workers/tab-curriculum-upload/worker.js | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$T" ]; then echo "Could not read access code from worker.js"; exit 1; fi
+          enc() { python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$1"; }
+
+          echo "== health =="
+          curl -sS "$BASE/health"; echo
+
+          echo "== staged manifest =="
+          LS=$(curl -sS "$BASE/ls?t=$T&prefix=$(enc "$SRC/")")
+          MK=$(echo "$LS" | jq -r '.objects[].key' | grep -i 'manifest.json' | head -1 || true)
+          echo "manifest key: ${MK:-<none found>}"
+          if [ -n "${MK:-}" ]; then
+            echo "----- manifest.json -----"
+            curl -sS "$BASE/get?t=$T&key=$(enc "$MK")"; echo
+          fi
+
+          echo "== review (dry run) =="
+          curl -sS -X POST "$BASE/publish?t=$T&dry=1&source=$(enc "$SRC")" | tee /tmp/plan.json; echo
+          CAN=$(jq -r '.plan.can_publish // false' /tmp/plan.json 2>/dev/null || echo false)
+          echo "can_publish: $CAN"
+
+          if [ "$DO_PUBLISH" != "true" ]; then
+            echo "Review only — not publishing. Re-run with do_publish=true to go live."
+            exit 0
+          fi
+
+          Q="source=$(enc "$SRC")"
+          [ "$REPLACE" = "true" ] && Q="$Q&replace=1"
+          [ "$ALLOW_MISSING" = "true" ] && Q="$Q&allow_missing=1"
+          echo "== PUBLISH =="
+          RESP=$(curl -sS -X POST "$BASE/publish?t=$T&$Q")
+          echo "$RESP"
+          echo "$RESP" | jq -e '.ok == true' >/dev/null || { echo "Publish did not succeed."; exit 1; }
+          echo "Published."
