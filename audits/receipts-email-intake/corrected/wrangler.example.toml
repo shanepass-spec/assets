@@ -1,0 +1,39 @@
+# wrangler.example.toml — receipts-email-intake v2.0 (CHURCH account, ffd360…)
+# EXAMPLE ONLY. Not wired to any deploy. No secrets here.
+# Deploying this is HUMAN-GATED (staging authorization + secret rotation).
+
+name = "receipts-email-intake"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+account_id = "ffd360b239936d51e85d9961fdaeb65a"   # church account (Email Routing lives here)
+
+# --- Non-secret vars ---------------------------------------------------------
+[vars]
+RECEIPTS_URL         = "https://receipts.shanepass.workers.dev"
+TRUSTED_AUTHSERV     = "mx.cloudflare.net"        # authserv-id of the trusted ingress; VERIFY against a real received message before staging
+STAFF_ALLOWLIST      = ""                          # REQUIRED, comma-separated EXACT staff addresses. EMPTY = deny all (safe default).
+CHECK_ALLOWLIST      = ""                          # comma-separated EXACT addresses allowed to raise check requests. EMPTY = no check authority.
+MAX_ATTACHMENT_BYTES = "12582912"                 # 12 MiB decoded
+MAX_MIME_PARTS       = "40"
+
+# --- Secret (set via `wrangler secret put`, NEVER in this file) ---------------
+# INTAKE_SECRET   -> rotate in lockstep with the downstream `receipts` worker (see SECRET_ROTATION_RUNBOOK.md)
+
+# --- Optional bindings (recommended for full F-08/F-13 coverage) -------------
+# [[kv_namespaces]]
+# binding = "DEDUPE_KV"        # replay fast-path; downstream UNIQUE(dedupe_key) is authoritative
+# id = "<create in church account>"
+#
+# [[kv_namespaces]]
+# binding = "DEADLETTER_KV"    # safe metadata for failed downstream posts
+# id = "<create in church account>"
+#
+# [[queues.producers]]
+# binding = "RETRY_QUEUE"      # if bound, failed posts enqueue for a consumer to retry instead of throwing
+# queue = "receipts-intake-retry"
+
+# --- Email Routing (HUMAN-GATED; do NOT change routing during audit) ---------
+# Bind the receipts/check custom addresses to this worker in the church account
+# dashboard. Example addresses to confirm with Shane before staging:
+#   receipts@thetabsarasota.org   -> intent 'receipt'
+#   checks@thetabsarasota.org     -> intent 'check' (still requires CHECK_ALLOWLIST)
