@@ -39,6 +39,10 @@ and nothing in this directory should be read as claiming them.
 
 ## Specs
 
+- `controlplane/card298-snapshot-hash-at-write-4576-r1.json` — every snapshot INSERT routes through
+  one `snapshotInsert()` helper so `code_sha256` is stamped at write time instead of being backfilled
+  afterwards. Built to the Scout ruling of 2026-09-15/16. Touches no legacy row and leaves the backfill
+  page in place.
 - `scout-claude-relay/card312-relay-key-expiry-4583-r1.json` — Relay credential expiry is reported in-band on
   `/relay/session`, and the mint ceiling moves from 720 to 2160 hours per the owner ruling of
   2026-09-16. Mints nothing, rotates nothing, edits no existing token row, and reads no token value.
