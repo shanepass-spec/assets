@@ -1,5 +1,11 @@
 # TabReady D1 migration — copy runner and self-audit
 
+> **The ruled path is `../workers/`.** The copy runs through two temporary
+> migration workers, so no API token is created anywhere. This shell kit is
+> retained because the reconciliation logic, load ordering and fingerprint
+> definition are shared with the workers and are easier to read here — but it
+> is not the route to the gate.
+
 Moves the TabReady database from the personal Cloudflare account to the church
 account and proves the move in the same pass.
 
@@ -92,6 +98,16 @@ with triggers attached would fabricate roughly one phantom version row per
 content row — corruption that a row-count-only reconciliation would pass.
 `copy.sh` refuses to start if the destination already carries any index,
 trigger or view.
+
+**Fifteen tables exist but stay empty.** `auth_request_limits`,
+`incident_shares`, `login_codes`, `magic_links`, `pco_cal_instances`,
+`pco_cal_sync_runs`, `pco_dates_cache`, `pco_group_cache`, `pco_group_members`,
+`place_invites`, `push_subscriptions`, `recovery_requests`,
+`roster_sync_changes`, `roster_sync_runs` and `transfer_jti` are created and
+never loaded. The live app reads and writes all of them, so omitting the tables
+breaks production — `magic_links` and `login_codes` on the first login attempt.
+Omitting their *rows* is the original and correct intent. Schema travels, rows
+do not, and the audit asserts both.
 
 **`write_context` is part of the copy.** All three `content` triggers read it.
 It was missing from the first schema pass; without it every future content edit

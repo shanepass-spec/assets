@@ -54,6 +54,19 @@ say "The fingerprint is COUNT, total quoted length, and three positional charact
 say ""
 
 # 2 ------------------------------------------------ excluded stayed excluded
+EMPTY_BAD=""
+while read -r t; do
+  is_schema_only "$t" || continue
+  n=$(dst_q "SELECT COUNT(*) AS n FROM \"$t\"" | one)
+  [ "$n" = "0" ] || EMPTY_BAD="$EMPTY_BAD $t($n)"
+done < "$RUN/include.txt"
+if [ -z "$EMPTY_BAD" ]; then
+  check "schema-only tables are empty" pass "present and empty — no auth material, JWT replay record, rate-limit counter or PCO cache row carried over"
+else
+  check "schema-only tables are empty" fail "unexpectedly populated:$EMPTY_BAD"
+fi
+say ""
+
 say "## 2. Excluded tables stayed excluded"
 say ""
 LEAKED=""

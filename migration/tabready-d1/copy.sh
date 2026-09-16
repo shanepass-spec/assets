@@ -81,6 +81,7 @@ log "preflight: $(wc -l < "$OUT/fk-edges.txt") FK edges, all satisfied by the ti
 log "baseline: recording source counts (this is also the rollback proof anchor)"
 : > "$OUT/baseline.tsv"
 while read -r t; do
+  is_schema_only "$t" && continue
   cj=$(cols_json src_q "$t")
   fp=$(src_q "$(fingerprint_sql "$t" "$cj")" | jq -c '.result[-1].results[0]')
   printf '%s\t%s\n' "$t" "$fp" >> "$OUT/baseline.tsv"
@@ -123,6 +124,7 @@ TOTAL=0
 for tier in 0 1 2 3; do
   while read -r t; do
     [ "$(tier_of "$t")" = "$tier" ] || continue
+    is_schema_only "$t" && continue
     cj=$(cols_json src_q "$t")
     collist=$(printf '%s' "$cj" | jq -r 'map("\"" + . + "\"") | join(",")')
     vals=$(printf '%s' "$cj" | jq -r 'map("quote(\"" + . + "\")") | join(" || \",\" || ")')

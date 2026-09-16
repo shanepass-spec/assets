@@ -26,6 +26,14 @@ API="https://api.cloudflare.com/client/v4"
 MAX_SQL_BYTES=90000   # conservative per-request SQL budget
 PAGE_ROWS=300         # rows read per source page
 
+# Tables that MUST EXIST but MUST STAY EMPTY. The live app reads and writes
+# every one of them, so a destination without them throws "no such table" in
+# production. Their CONTENTS are a separate question: auth material, JWT replay
+# records, rate-limit counters and PCO cache stay behind. Schema travels, rows
+# do not.
+SCHEMA_ONLY="auth_request_limits incident_shares login_codes magic_links pco_cal_instances pco_cal_sync_runs pco_dates_cache pco_group_cache pco_group_members place_invites push_subscriptions recovery_requests roster_sync_changes roster_sync_runs transfer_jti"
+is_schema_only() { case " $SCHEMA_ONLY " in *" $1 "*) return 0;; esac; return 1; }
+
 die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 

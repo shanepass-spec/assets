@@ -42,6 +42,16 @@ const TIER = {
 };
 const tierOf = (t) => (t in TIER ? TIER[t] : 1);
 
+// Tables that MUST EXIST but MUST STAY EMPTY.
+//
+// The live app inserts into and selects from every one of these, so a
+// destination without them throws "no such table" in production — on the first
+// login attempt, in the case of magic_links and login_codes. Their CONTENTS are
+// a different question: live auth material, JWT replay records, rate-limit
+// counters and PCO cache are all deliberately left behind. Schema travels,
+// rows do not.
+const SCHEMA_ONLY = new Set(['auth_request_limits','incident_shares','login_codes','magic_links','pco_cal_instances','pco_cal_sync_runs','pco_dates_cache','pco_group_cache','pco_group_members','place_invites','push_subscriptions','recovery_requests','roster_sync_changes','roster_sync_runs','transfer_jti']);
+
 // ------------------------------------------------------------------- auth
 
 async function hmacHex(secret, msg) {
@@ -153,6 +163,11 @@ async function runD1(env, ctx, chain) {
   let movedAny = false;
 
   for (const t of ordered) {
+    if (SCHEMA_ONLY.has(t)) {
+      const here = await countAt(env, t);
+      if (here !== 0) return { error: t + ' is schema-only but holds ' + here + ' rows at the destination' };
+      continue;
+    }
     const fp = (await src('/d1/fingerprint?t=' + encodeURIComponent(t))).fingerprint;
     const want = (fp && fp.n) || 0;
     let have = await countAt(env, t);
@@ -257,8 +272,14 @@ async function verify(env) {
 
   // 1 — row counts and content fingerprints
   const bad = [];
+  const notEmpty = [];
   let total = 0;
   for (const t of tables) {
+    if (SCHEMA_ONLY.has(t)) {
+      const here = await countAt(env, t);
+      if (here !== 0) notEmpty.push({ table: t, rows: here });
+      continue;
+    }
     const want = (await src('/d1/fingerprint?t=' + encodeURIComponent(t))).fingerprint;
     const cols = (await src('/d1/columns?t=' + encodeURIComponent(t))).columns;
     const rt = cols.map(c => 'quote(' + q(c) + ')').join(" || char(31) || ");
@@ -272,17 +293,18 @@ async function verify(env) {
     if (!same) bad.push({ table: t, source: want, destination: got });
   }
   add('row counts and content fingerprints', bad.length === 0,
-    bad.length ? bad : tables.length + ' tables match source exactly (' + total + ' rows)');
+    bad.length ? bad : (tables.length - SCHEMA_ONLY.size) + ' copied tables match source exactly (' + total + ' rows)');
+  add('schema-only tables are empty', notEmpty.length === 0,
+    notEmpty.length ? notEmpty : SCHEMA_ONLY.size + ' tables present and empty — no auth material, JWT replay record, rate-limit counter or PCO cache row was carried over');
 
   // 2 — excluded tables stayed excluded
   const excluded = srcTables.filter(t => tables.indexOf(t) === -1);
   // Assert the forbidden categories are absent by name. Comparing the
   // destination list against itself, as an earlier draft of this did, is a
   // check that can never fail and therefore proves nothing.
-  const forbidden = tables.filter(t =>
-    /^(login_codes|magic_links|recovery_requests|incident_shares|push_subscriptions)$/i.test(t) ||
-    /^pco_/i.test(t) || /_backup/i.test(t) || /^wave\d/i.test(t) ||
-    /migration_ledger|routing_snapshot|consolidation_audit/i.test(t));
+  const forbidden = tables.filter(t => !SCHEMA_ONLY.has(t) && (
+    /_backup/i.test(t) || /^wave\d/i.test(t) || /_legacy_/i.test(t) || /_rollback_/i.test(t) ||
+    /migration_ledger|routing_snapshot|consolidation_audit|pilot_tokens/i.test(t)));
   add('excluded tables', forbidden.length === 0,
     forbidden.length ? forbidden : excluded.length + ' source tables deliberately absent (auth material, PCO cache, backups)');
 

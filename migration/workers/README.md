@@ -85,6 +85,33 @@ triggers attached fabricates roughly one phantom history row per content row —
 and a row-count-only reconciliation would pass it. `/run/d1` refuses to load
 into a schema that already carries indexes, triggers or views.
 
+## Tables that exist but stay empty
+
+Fifteen tables are created at the destination and never receive a row:
+
+    auth_request_limits  incident_shares  login_codes  magic_links
+    pco_cal_instances    pco_cal_sync_runs  pco_dates_cache  pco_group_cache
+    pco_group_members    place_invites    push_subscriptions  recovery_requests
+    roster_sync_changes  roster_sync_runs  transfer_jti
+
+The original exclusion list treated "do not copy the rows" and "do not create
+the table" as the same decision. They are not. The live app inserts into and
+selects from every one of these, so a destination without them throws
+`no such table` in production — on the **first login attempt**, in the case of
+`magic_links` and `login_codes`. `transfer_jti` backs JWT replay prevention and
+`auth_request_limits` backs rate limiting, so their absence would have failed
+open on two security controls.
+
+Their contents are a separate question and the original intent stands: live auth
+material, JWT replay records, rate-limit counters and PCO cache do not travel.
+Schema travels, rows do not. `/verify` asserts both halves — the tables are
+present, and they are empty.
+
+The other 27 excluded tables are genuine backups and legacy snapshots and stay
+behind: `*_backup_*`, `wave1_backup`, `migration_ledger_wave_a/b`,
+`content_routing_snapshot_20260714`, `consolidation_audit`, `gm_marks_legacy_v1`,
+`gm_pilot_tokens`, `gchfa_merge_rollback_20260806`.
+
 ## What `/verify` proves
 
 Row counts and content fingerprints per table · forbidden tables absent by name
