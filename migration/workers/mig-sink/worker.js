@@ -4,8 +4,11 @@
  * Account:  church ffd360b239936d51e85d9961fdaeb65a
  * Bindings: DST     D1 -> tabready-main   (548cf797-8313-4a3e-827f-408ff1676b73)
  *           DST_R2  R2 -> tabready-photos
- * Vars:     MIG_SOURCE_URL   https://mig-source.shanepass.workers.dev
- * Secret:   MIG_SECRET       (entered directly in the dashboard, same value as mig-source)
+ * Secret:   MIG_SECRET       (entered directly in a secret store, same value as mig-source)
+ * Vars:     none required. MIG_SOURCE_URL and MIG_SELF_URL exist only as
+ *           optional overrides — the defaults below cover the real deployment,
+ *           so this worker can be stood up entirely through the control plane,
+ *           which can set bindings but has no plain-var write path.
  *
  * Pulls from mig-source and writes here. The church side drives the copy, so
  * the personal side stays a pure reader that knows nothing about a destination.
@@ -25,6 +28,10 @@ const BUDGET_MS = 20000;     // stop and hand off to a continuation
 const MAX_CHAIN = 400;       // runaway guard
 const MAX_FETCH = 700;       // subrequest guard
 const PAGE = 200;
+
+// The personal account's workers.dev subdomain, established from the deployed
+// worker inventory. Overridable, but not something anyone should have to type.
+const DEFAULT_SOURCE_URL = 'https://mig-source.shanepass.workers.dev';
 const SQL_BYTES = 90000;
 
 const json = (o, s = 200) =>
@@ -86,9 +93,9 @@ async function requireSig(request, env) {
 // ------------------------------------------------------------ source calls
 
 function makeSrc(env, counter) {
-  const base = String(env.MIG_SOURCE_URL || '').replace(/\/+$/, '');
+  const base = String(env.MIG_SOURCE_URL || DEFAULT_SOURCE_URL).replace(/\/+$/, '');
   return async function src(path, raw) {
-    if (!base) throw new Error('MIG_SOURCE_URL is not set');
+    if (!base) throw new Error('no source URL available');
     if (counter.n++ > MAX_FETCH) throw new Error('subrequest_budget_exhausted');
     const ts = String(Date.now());
     const u = new URL(base + path);
@@ -127,9 +134,12 @@ function idempotent(sql) {
     .replace(/^\s*CREATE\s+TRIGGER\s+(?!IF\s+NOT\s+EXISTS)/i, 'CREATE TRIGGER IF NOT EXISTS ');
 }
 
-async function selfChain(env, ctx, path, chain) {
+async function selfChain(env, ctx, origin, path, chain) {
   if (chain >= MAX_CHAIN) return false;
-  const base = String(env.MIG_SELF_URL || '').replace(/\/+$/, '');
+  // The worker's own origin comes from the request that is running right now.
+  // Asking an operator to type a worker's own URL into its own config is a
+  // step that can be wrong; this one cannot.
+  const base = String(env.MIG_SELF_URL || origin || '').replace(/\/+$/, '');
   if (!base) return false;
   const u = new URL(base + path);
   u.searchParams.set('chain', String(chain + 1));
@@ -141,7 +151,7 @@ async function selfChain(env, ctx, path, chain) {
 
 // --------------------------------------------------------------- d1 phase
 
-async function runD1(env, ctx, chain) {
+async function runD1(env, ctx, origin, chain) {
   const t0 = Date.now();
   const counter = { n: 0 };
   const src = makeSrc(env, counter);
@@ -176,7 +186,7 @@ async function runD1(env, ctx, chain) {
     while (have < want) {
       if (liveDdl > 0) return { error: 'destination carries ' + liveDdl + ' index/trigger/view objects — load must run against a bare schema' };
       if (Date.now() - t0 > BUDGET_MS) {
-        const more = await selfChain(env, ctx, '/run/d1', chain);
+        const more = await selfChain(env, ctx, origin, '/run/d1', chain);
         return { phase: 'rows', done: false, continued: more, table: t, at: have, of: want, loaded: loaded };
       }
       const page = await src('/d1/rows?t=' + encodeURIComponent(t) + '&limit=' + PAGE + '&offset=' + have);
@@ -211,7 +221,7 @@ async function runD1(env, ctx, chain) {
     for (const o of objs) {
       if (kind !== 'view' && tables.indexOf(o.tbl_name) === -1) continue;  // belongs to an excluded table
       if (Date.now() - t0 > BUDGET_MS) {
-        const more = await selfChain(env, ctx, '/run/d1', chain);
+        const more = await selfChain(env, ctx, origin, '/run/d1', chain);
         return { phase: 'ddl', done: false, continued: more, kind: kind, loaded: loaded };
       }
       await env.DST.prepare(idempotent(o.sql)).run();
@@ -230,7 +240,7 @@ async function runD1(env, ctx, chain) {
 
 // --------------------------------------------------------------- r2 phase
 
-async function runR2(env, ctx, chain, cursor) {
+async function runR2(env, ctx, origin, chain, cursor) {
   if (!env.DST_R2) return { error: 'DST_R2 binding is not configured' };
   const t0 = Date.now();
   const counter = { n: 0 };
@@ -241,7 +251,7 @@ async function runR2(env, ctx, chain, cursor) {
     const listed = await src('/r2/list?limit=200' + (cur ? '&cursor=' + encodeURIComponent(cur) : ''));
     for (const o of listed.objects) {
       if (Date.now() - t0 > BUDGET_MS) {
-        const more = await selfChain(env, ctx, '/run/r2?cursor=' + encodeURIComponent(cur), chain);
+        const more = await selfChain(env, ctx, origin, '/run/r2?cursor=' + encodeURIComponent(cur), chain);
         return { phase: 'r2', done: false, continued: more, copied: copied, skipped: skipped, bytes: bytes };
       }
       const head = await env.DST_R2.head(o.key);
@@ -383,8 +393,8 @@ export default {
       return json({
         ok: true, service: 'mig-sink', role: 'writer',
         bindings: { DST: !!env.DST, DST_R2: !!env.DST_R2 },
-        source_url_set: !!env.MIG_SOURCE_URL,
-        self_url_set: !!env.MIG_SELF_URL,
+        source_url: String(env.MIG_SOURCE_URL || DEFAULT_SOURCE_URL),
+        self_origin: new URL(request.url).origin,
         secret_present: !!env.MIG_SECRET
       });
     }
@@ -394,8 +404,8 @@ export default {
 
     const chain = parseInt(url.searchParams.get('chain') || '0', 10) || 0;
     try {
-      if (p === '/run/d1' && request.method === 'POST') return json(await runD1(env, ctx, chain));
-      if (p === '/run/r2' && request.method === 'POST') return json(await runR2(env, ctx, chain, url.searchParams.get('cursor') || ''));
+      if (p === '/run/d1' && request.method === 'POST') return json(await runD1(env, ctx, url.origin, chain));
+      if (p === '/run/r2' && request.method === 'POST') return json(await runR2(env, ctx, url.origin, chain, url.searchParams.get('cursor') || ''));
       if (p === '/verify') { const v = await verify(env); return json(v, v.ok ? 200 : 409); }
       return json({ error: 'not_found' }, 404);
     } catch (e) {

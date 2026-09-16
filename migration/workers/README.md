@@ -36,10 +36,30 @@ live service.
 - **Row batches are atomic.** Statements go through `batch()` as prepared
   statements, in a transaction, so a batch lands completely or not at all.
 
+## Deploying through the control plane
+
+This has direct precedent. On 2026-07-27 the control plane created
+`tab-curriculum-upload` in the **church** account from nothing and wired it up
+in 27 seconds — `stage` 16:17:11, `deploy-direct` 16:17:18 (matching the
+worker's `created_on` exactly), `bind` 16:17:38 reporting
+`church: before=0 after=1 lost=none`, `enable-subdomain` 16:17:39. New worker
+name, new binding, new subdomain, church account. Audit ids 6402–6405.
+
+R2 bindings are supported too — `r2_bucket` appears in the control plane's
+binding code alongside `d1`.
+
+Worker secrets: the control plane has a working secret path, proven four times
+— `link-secret` installing `SNAPSHEET_LINK_SECRET` with HTTP 201 on 2026-09-06
+and HTTP 200 on 2026-09-08, on both `tabready` and `snapsheet-pilot`. What that
+proves is the credential and the code path, for one hardcoded secret installed
+during deploy. Whether the UI accepts an arbitrarily named secret is a separate
+question and is **not** proven. Treat the dashboard as the reliable route for
+`MIG_SECRET` until the control-plane route is demonstrated once.
+
 ## The human gate — everything, in one sitting
 
-Both deploys, then the same secret typed into both dashboards. The secret value
-is never sent to an agent, to Relay, or into a conversation.
+Both deploys, then the same secret entered into both secret stores. The secret
+value is never sent to an agent, to Relay, or into a conversation.
 
 **1 — generate a one-time secret.** Any high-entropy value, roughly 40+
 characters. Generate it where you can copy it twice and then discard it.
@@ -58,9 +78,20 @@ characters. Generate it where you can copy it twice and then discard it.
 | --- | --- | --- |
 | D1 | `DST` | `tabready-main` · `548cf797-8313-4a3e-827f-408ff1676b73` |
 | R2 | `DST_R2` | `tabready-photos` (church) |
-| Var | `MIG_SOURCE_URL` | the deployed `mig-source` URL |
-| Var | `MIG_SELF_URL` | `mig-sink`'s own URL — lets a long copy continue itself |
 | Secret | `MIG_SECRET` | the same value from step 1 |
+
+**No vars are required.** The source URL defaults to
+`https://mig-source.shanepass.workers.dev`, and the worker derives its own
+origin from the request it is currently serving rather than being told it.
+`MIG_SOURCE_URL` and `MIG_SELF_URL` still work as overrides if a deploy lands
+somewhere unexpected.
+
+This matters for how the deploy is done: the control plane can create workers
+and set D1 and R2 bindings, but it has **no plain-var write path** — no
+`plain_text` or `vars` handling exists anywhere in its source. Requiring vars
+would have forced a dashboard visit that is now unnecessary. Asking an operator
+to type a worker's own URL into that worker's own config is also a step that can
+be got wrong; deriving it cannot.
 
 **4 — confirm without revealing anything.** Open each worker's `/health`. Both
 must report their bindings `true` and `secret_present: true`. That is a
