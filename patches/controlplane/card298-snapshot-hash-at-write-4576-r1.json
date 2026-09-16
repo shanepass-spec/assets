@@ -1,0 +1,79 @@
+{
+  "card": 298,
+  "bundle": "card298-snapshot-hash-at-write-4576-r1",
+  "worker": "controlplane",
+  "account": "26c8013cfb2cf72dde19e55e6cf390b1",
+  "base_snapshot_id": 4576,
+  "base_version": "3.51.2",
+  "base_sha256": "31bce98408d74548633cf43d47d606ca6cdb67ecec1846b581814e8fb16aaeec",
+  "base_chars": 499862,
+  "staged_version": "3.52.0",
+  "expected_result_chars": 500407,
+  "delta_chars": 545,
+  "scout_ruling": "2026-09-15/16: one shared snapshotInsert() helper reusing the existing snapshot hash logic; route the live deploy writer plus the dormant INSERT sites through it; do not alter legacy rows or broaden into backfill cleanup inside this hunk.",
+  "not_included": [
+    "No legacy row is altered, rehashed or deleted.",
+    "/snapshot-hash-backfill is untouched and remains the cleanup lane for pre-existing rows.",
+    "snapshotWorker's dedupe decision and snapshotRetain call are unchanged.",
+    "size is still patchByteLen(code || '') and code is still bound as given - the hunk adds the hash and changes nothing else.",
+    "No new route, no schema change, no auth change."
+  ],
+  "hunks": [
+    {
+      "id": "c298-h1-helper",
+      "append_style": true,
+      "note": "APPEND-STYLE AND DECLARED: the find appears inside its own replace. Safe under single application only. Inserts snapshotInsert() immediately above snapshotWorker(). Function declarations hoist, so placement does not affect the call sites that precede it.",
+      "find": "async function snapshotWorker(env, name, acctId, source) {",
+      "replace": "// v3.52.0 CARD 298 - SNAPSHOT IDENTITY IS ESTABLISHED AT WRITE TIME, NOT REPAIRED AFTERWARDS.\n// Every snapshot INSERT now routes through here, so no writer can create a row whose identity\n// has to be backfilled later. It reuses the existing helpers rather than copying hash logic:\n// snapshotHashEnsure guarantees the column exists, patchSha computes the digest. A caller that\n// has ALREADY computed the hash - snapshotWorker needs it for its dedupe decision before the\n// row is written - passes it as shaOpt so the digest is never taken twice. The D1 run() result\n// is returned unchanged so callers reading meta.last_row_id keep working.\n// SEMANTICS PRESERVED DELIBERATELY: size is still patchByteLen(code || \"\"), and code is still\n// bound as given, exactly as every call site did before. This hunk adds the hash and changes\n// nothing else. LEGACY ROWS ARE NOT TOUCHED - /snapshot-hash-backfill remains the cleanup lane\n// for rows written before this change, per the card 298 fence.\nasync function snapshotInsert(env, name, acctId, code, mainModule, source, shaOpt) {\n  await snapshotHashEnsure(env);\n  const sha = shaOpt || await patchSha(code || \"\");\n  return await env.DB.prepare(\n    \"INSERT INTO snapshots (worker_name, account_id, code, main_module, size, source, code_sha256) VALUES (?,?,?,?,?,?,?)\"\n  ).bind(name, acctId, code, mainModule, patchByteLen(code || \"\"), source, sha).run();\n}\n\nasync function snapshotWorker(env, name, acctId, source) {"
+    },
+    {
+      "id": "c298-h2-auto-deploy-a",
+      "append_style": false,
+      "note": "DORMANT WRITER (source 'auto-deploy'; zero surviving rows). Routed so a revived path cannot reintroduce the defect.",
+      "find": "await env.DB.prepare(\"INSERT INTO snapshots (worker_name, account_id, code, main_module, size, source) VALUES (?,?,?,?,?, 'auto-deploy')\")\n          .bind(row.worker_name, acct, row.code, row.main_module || \"worker.js\", patchByteLen(row.code||\"\")).run();",
+      "replace": "await snapshotInsert(env, row.worker_name, acct, row.code, row.main_module || \"worker.js\", \"auto-deploy\");"
+    },
+    {
+      "id": "c298-h3-auto-deploy-b",
+      "append_style": false,
+      "note": "DORMANT WRITER (second 'auto-deploy' site; different bind list, so it is a distinct anchor).",
+      "find": "await env.DB.prepare(\"INSERT INTO snapshots (worker_name, account_id, code, main_module, size, source) VALUES (?,?,?,?,?, 'auto-deploy')\")\n          .bind(worker_name, acct, code, main_module, patchByteLen(code)).run();",
+      "replace": "await snapshotInsert(env, worker_name, acct, code, main_module, \"auto-deploy\");"
+    },
+    {
+      "id": "c298-h4-deploy-LIVE",
+      "append_style": false,
+      "note": "THE ONLY LIVE WRITER THAT OMITTED THE HASH - the owner Deploy-tap path, 168 rows from 2026-08-14 to 2026-09-16. This single substitution closes the live defect; the rest is reintroduction cover.",
+      "find": "await env.DB.prepare(\"INSERT INTO snapshots (worker_name, account_id, code, main_module, size, source) VALUES (?,?,?,?,?, 'deploy')\")\n      .bind(row.worker_name, acct, row.code, row.main_module || \"worker.js\", patchByteLen(row.code||\"\")).run();",
+      "replace": "await snapshotInsert(env, row.worker_name, acct, row.code, row.main_module || \"worker.js\", \"deploy\");"
+    },
+    {
+      "id": "c298-h5-backup-reuse-sha",
+      "append_style": false,
+      "note": "LIVE WRITER THAT ALREADY STAMPED (snapshotWorker, card 285 H2). Routed through the helper so one INSERT statement remains in the file, passing its ALREADY-COMPUTED sha as shaOpt so the digest is not taken twice. The dedupe decision and snapshotRetain call above and below are untouched.",
+      "find": "await env.DB.prepare(\"INSERT INTO snapshots (worker_name, account_id, code, main_module, size, source, code_sha256) VALUES (?,?,?,?,?,?,?)\")\n      .bind(name, acctId, got.code, got.main_module, patchByteLen(got.code), source || \"backup\", sha).run();",
+      "replace": "await snapshotInsert(env, name, acctId, got.code, got.main_module, source || \"backup\", sha);"
+    },
+    {
+      "id": "c298-h6-deploy-direct",
+      "append_style": false,
+      "note": "DORMANT WRITER (source 'deploy-direct'; zero surviving rows).",
+      "find": "await env.DB.prepare(\"INSERT INTO snapshots (worker_name, account_id, code, main_module, size, source) VALUES (?,?,?,?,?,'deploy-direct')\")\n        .bind(row.worker_name, acct, row.code, row.main_module || \"worker.js\", patchByteLen(row.code||\"\")).run();",
+      "replace": "await snapshotInsert(env, row.worker_name, acct, row.code, row.main_module || \"worker.js\", \"deploy-direct\");"
+    },
+    {
+      "id": "c298-h7-self-stage-pre",
+      "append_style": false,
+      "note": "DORMANT WRITER (source 'self-stage-pre'; zero surviving rows). Its caller reads meta.last_row_id from the result, which the helper returns unchanged - the `const s = ` prefix sits outside the anchor and is preserved.",
+      "find": "await env.DB.prepare(\"INSERT INTO snapshots (worker_name, account_id, code, main_module, size, source) VALUES (?,?,?,?,?, 'self-stage-pre')\").bind(worker, acct, live, got.main_module||\"worker.js\", patchByteLen(live)).run();",
+      "replace": "await snapshotInsert(env, worker, acct, live, got.main_module||\"worker.js\", \"self-stage-pre\");"
+    },
+    {
+      "id": "c298-h8-version",
+      "append_style": false,
+      "note": "3.51.2 -> 3.52.0.",
+      "find": "const VERSION = \"3.51.2\";",
+      "replace": "const VERSION = \"3.52.0\";"
+    }
+  ]
+}

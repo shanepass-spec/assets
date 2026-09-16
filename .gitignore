@@ -2,3 +2,6 @@ node_modules/
 .wrangler/
 *.env
 .env.*
+migration/tabready-d1/run-*/
+migration/tabready-d1/*.token
+migration/tabready-d1/secrets.env
