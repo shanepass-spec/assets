@@ -25,7 +25,7 @@ for a in "$@"; do
   esac
 done
 
-require_tokens
+load_tokens
 OUT="./run-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
 
@@ -169,5 +169,6 @@ log "post-load: $(grep -c created "$OUT/ddl.log") objects created, $(grep -c ski
 
 # ----------------------------------------------------------------- verify
 
+assert_no_leak "$OUT"
 log "handing off to verify.sh"
 OUT="$OUT" ./verify.sh "$OUT"

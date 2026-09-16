@@ -20,12 +20,12 @@ if anything failed.
 Two short-lived Cloudflare API tokens, **D1 permission only**. No Workers
 Scripts permission — that belongs to the later cutover step, not this one.
 
-| Env var | Account | Permission | Why |
+| Credential | Account | Permission | Why |
 | --- | --- | --- | --- |
-| `CF_SRC_TOKEN` | Shanepass@gmail.com | **D1 → Read** | render source rows into INSERT statements server-side |
-| `CF_DST_TOKEN` | Media@thetabsarasota.org | **D1 → Edit** | apply them to `tabready-main` |
+| `SRC` | Shanepass@gmail.com | **D1 → Read** | render source rows into INSERT statements server-side |
+| `DST` | Media@thetabsarasota.org | **D1 → Edit** | apply them to `tabready-main` |
 
-The read token matters as much as the write token. With only a destination
+The read credential matters as much as the write one. With only a destination
 token, the source dump still has to be pulled through a conversation and pushed
 back out — which is the exact failure this kit exists to remove. With both, the
 rows are rendered by the source database, POSTed straight to the destination,
@@ -34,8 +34,37 @@ and never enter anyone's context.
 Neither token touches the control plane, and the control-plane token stays
 personal-only.
 
-Tokens are read from the environment and are never echoed, logged, or written
-into any artifact this kit produces.
+### Token values never enter a conversation
+
+Per the owner ruling of 2026-09-16, token values are entered directly into a
+secure store at the machine that runs this kit. They are not pasted into chat,
+not sent to Relay, not committed, and not handed to any agent.
+
+Supply them either way — file form is preferred, because an environment
+variable is readable from `/proc/<pid>/environ` by anything running as the same
+user:
+
+    CF_SRC_TOKEN_FILE=/path/to/src.token     # 0600 file, systemd credential,
+    CF_DST_TOKEN_FILE=/path/to/dst.token     # or a password-manager CLI dump
+
+    CF_SRC_TOKEN=…                           # direct environment entry
+    CF_DST_TOKEN=…
+
+What the kit guarantees, and what you can check yourself:
+
+- the bearer header is written to a `0600` file inside a private `mktemp -d`
+  and passed to curl as `-H @file`, so **the token never appears in `argv`** and
+  never shows up in `ps` output;
+- the temp directory is removed by an `EXIT`/`INT`/`TERM` trap, and both
+  variables are unset once loaded;
+- the run **refuses to start under `set -x`**, so a shell trace cannot print a
+  token into a terminal or a CI log;
+- a value that is not shaped like a Cloudflare API token — wrong characters, or
+  shorter than 30 of the expected 40 — is rejected before it reaches the
+  network, so a pasted placeholder fails locally rather than in a request;
+- after the load and again after the audit, `assert_no_leak` greps every file
+  the run produced for the token values and **fails the run** if either appears;
+- `run-*/`, `*.token` and `secrets.env` are git-ignored.
 
 ## Running it
 

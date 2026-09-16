@@ -10,7 +10,7 @@
 set -Eeuo pipefail
 cd "$(dirname "$0")"
 . ./lib.sh
-require_tokens
+load_tokens
 
 RUN="${1:-}"
 [ -n "$RUN" ] && [ -d "$RUN" ] || die "usage: ./verify.sh <run-directory>"
@@ -168,6 +168,8 @@ say "---"
 say ""
 if [ "$FAILED" = "0" ]; then say "**All checks passed.** Next hunk: church binding verification."
 else say "**$FAILED check(s) failed.** Do not proceed to binding verification."; fi
+
+assert_no_leak "$RUN"
 
 cat "$PROOF"
 [ "$FAILED" = "0" ] || exit 1
