@@ -89,3 +89,87 @@ missing. Raising it now rather than discovering it after cutover.
 - `safety-intake` returned no `env.` matches, most likely because it
   destructures its environment. Its bindings are not covered here.
 - R2 object inventories are not obtainable with current tooling.
+
+---
+
+# Worker cutover checklist
+
+Added 2026-09-16 as prep for the worker-move hunk, so it can land as one sitting
+the way the copy hunk does. Read-only; extracted server-side in SQL.
+
+## Binding types, resolved
+
+Probed by the method actually called on each binding — `.prepare(` means D1,
+`.put(`/`.list(`/`.head(` means R2, `.fetch(` means a **service binding**.
+
+| Worker | Binding | Type |
+| --- | --- | --- |
+| `tabready` | `DB` | D1 |
+| `tabready` | `PHOTOS` | **R2** |
+| `tabready` | `CONTENT_DB` | D1 (inferred — see limits) |
+| `tabready-admin` | `DB` | D1 (inferred) |
+| `tab-email-ingest` | `DB` | D1 (inferred) |
+| `tab-email-ingest` | `SERMONS` | **service binding** |
+| `tab-website-ai` | `DB` | D1 |
+| `tab-website-ai` | `SERMONS` | **service binding** |
+| `tab-supplies-worker` | `DB` | D1 |
+| `susanofficehelper` | `DB` | D1 |
+| `susanofficehelper` | `RECEIPTS_DB`, `RECEIPTS_FILES` | D1 / R2 (inferred) |
+
+**Limit:** this probe only sees a method called *directly* on `env.NAME`. A
+worker that does `const db = env.DB` and then calls `db.prepare(...)` reads as
+"inferred" above — the binding exists, its type is taken from its name and its
+target rather than proven by the probe.
+
+## Service bindings are same-account only — the constraint that bites
+
+`tab-email-ingest` and `tab-website-ai` both service-bind `SERMONS` to
+`tab-sermons`. **A service binding cannot cross accounts.** `tab-sermons` exists
+only in the personal account; the registry records `church-tab-sermons` as
+VERIFIED ABSENT.
+
+So the church copy of `tab-email-ingest` cannot have a working `SERMONS`
+binding, and must already be falling back to the hardcoded
+`tab-sermons.shanepass.workers.dev` HTTPS hop found in the cross-account
+inventory above. That is the documented architecture — thin worker in church,
+HTTP hop to the app in personal — and it is why both a binding and a URL exist
+in the same file.
+
+The consequence for the move: **any worker that moves to church and keeps a
+service binding to a personal worker breaks silently.** Each one either needs
+its target moved in the same hunk, or needs to be switched to the HTTPS hop
+before the move. This is not a thing to discover at cutover.
+
+## `safety-intake` has no bindings at all
+
+Resolved the last gap in this inventory. `safety-intake` (snapshot 4246,
+121,905 bytes) contains **no `env.` reference anywhere**, no `env[`, no
+`.prepare(`, no `.put(`, and no `addEventListener`. It is a module worker with
+`fetch` and `email` handlers and zero bindings.
+
+Its configuration is hardcoded as source constants: `const APP_INGEST_URL` and
+`const INTAKE_SECRET`.
+
+Two consequences, stated separately:
+
+- **For the migration, this is a simplification.** Nothing to bind, no secret
+  to re-enter. It deploys as-is.
+- **For security, it is the debt already on the board.** A shared secret living
+  as a source constant is readable by anyone who can read the worker's code,
+  and it is carried in the control-plane snapshot store like any other source.
+  No value was read here and none is recorded. Scout has ruled not to rebuild
+  this worker; this entry is the evidence, not a reopening of that ruling.
+
+## Schema-vs-data rule — remaining databases
+
+Complete. The three church destinations created on 2026-09-16 are
+`tabready-main`, `tab-workorders-main` and `tab-website-content`. All three have
+now been checked and none has a further gap:
+
+- `tabready-main` — 15 tables were missing and have been created empty.
+- `tab-workorders-main` — clean; auth rows correctly left behind.
+- `tab-website-content` — clean; only a backup table absent.
+
+Every other database in the church account is church-native and is not a
+migration destination. **There is no further schema-vs-data work available
+without the deploy gate.**
