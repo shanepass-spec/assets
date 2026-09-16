@@ -1,0 +1,86 @@
+{
+  "card": 312,
+  "bundle": "card312-relay-key-expiry-4583-r1",
+  "worker": "scout-claude-relay",
+  "account": "26c8013cfb2cf72dde19e55e6cf390b1",
+  "base_snapshot_id": 4583,
+  "base_version": "1.40.0",
+  "base_sha256": "2c2e5b3aca5e3b4f34219d98b337224f91467fc7a4d1a5c5a5ac94b6545258a9",
+  "base_chars": 416455,
+  "staged_version": "1.41.0",
+  "expected_result_chars": 418805,
+  "delta_chars": 2350,
+  "owner_ruling": "Relay msg 1707, 2026-09-16: move toward 90-day keys; keep expiry warnings visible; warn around 14 days; hard max target 2160 hours; no rotation, token exposure or live secret change without staged proof and owner approval.",
+  "not_included": [
+    "No key is minted, rotated, revoked or extended by this patch.",
+    "No existing relay_tokens row is edited - row 29 keeps its own 2026-09-30 16:45:27 expiry and lapses on its own.",
+    "No token value is read, written, logged or returned anywhere.",
+    "MINT_TTL_HOURS_DEFAULT stays 72 hours - only the ceiling moves.",
+    "No new route, no schema change, no auth or scope behaviour change."
+  ],
+  "hunks": [
+    {
+      "id": "c312-h1-ttl-ceiling",
+      "note": "Owner ruling 2026-09-16 (Relay msg 1707): hard max 2160 hours / 90 days. CEILING ONLY - MINT_TTL_HOURS_DEFAULT stays 72, so a long-lived key must still be asked for explicitly with ?ttl_hours=2160.",
+      "find": "const MINT_TTL_HOURS_MAX = 720;",
+      "replace": "const MINT_TTL_HOURS_MAX = 2160;",
+      "append_style": false
+    },
+    {
+      "id": "c312-h2a-lookup-select-wide",
+      "note": "expires_at is already in this SELECT's WHERE clause; this adds it to the column list so the value can be reported, not merely enforced.",
+      "find": "\"SELECT id, scopes, actor_seat FROM relay_tokens WHERE token_hash = ? AND (status IS NULL OR status = 'active') AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at = '' OR expires_at > datetime('now')) LIMIT 1\"",
+      "replace": "\"SELECT id, scopes, actor_seat, expires_at FROM relay_tokens WHERE token_hash = ? AND (status IS NULL OR status = 'active') AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at = '' OR expires_at > datetime('now')) LIMIT 1\"",
+      "append_style": false
+    },
+    {
+      "id": "c312-h2b-lookup-select-narrow",
+      "note": "The pre-1.34.0 fallback SELECT gets the same column. expires_at predates actor_seat and is already referenced in this statement's own WHERE clause, so no store that reaches this line can lack it.",
+      "find": "\"SELECT id, scopes FROM relay_tokens WHERE token_hash = ? AND (status IS NULL OR status = 'active') AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at = '' OR expires_at > datetime('now')) LIMIT 1\"",
+      "replace": "\"SELECT id, scopes, expires_at FROM relay_tokens WHERE token_hash = ? AND (status IS NULL OR status = 'active') AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at = '' OR expires_at > datetime('now')) LIMIT 1\"",
+      "append_style": false
+    },
+    {
+      "id": "c312-h2c-lookup-return",
+      "note": "Carries token_id and expires_at back to callers. Authentication and authorization are untouched - ok, scoped and allowed are computed exactly as before.",
+      "find": "    return { ok: true, scoped: scoped, allowed: scopeAllows(row.scopes, required), seat: String(row.actor_seat || \"\").trim() };",
+      "replace": "    return { ok: true, scoped: scoped, allowed: scopeAllows(row.scopes, required), seat: String(row.actor_seat || \"\").trim(), token_id: row.id, expires_at: String(row.expires_at || \"\").trim() };",
+      "append_style": false
+    },
+    {
+      "id": "c312-h3a-seat-builder-branch",
+      "note": "x-builder-token branch passes the expiry through. The env:BUILDER_TOKEN and RELAY_WRITE_TOKEN branches above are deliberately NOT touched - an env-bound credential has no expiry row and must report none rather than a fabricated one.",
+      "find": "    const r = await lookupToken(env, bt, null);\n    if (r.ok) return { seat: canonicalSeat(r.seat), source: canonicalSeat(r.seat) ? \"relay_tokens.actor_seat\" : \"relay_tokens row carries no actor_seat\" };",
+      "replace": "    const r = await lookupToken(env, bt, null);\n    if (r.ok) return { seat: canonicalSeat(r.seat), source: canonicalSeat(r.seat) ? \"relay_tokens.actor_seat\" : \"relay_tokens row carries no actor_seat\", token_id: r.token_id || null, expires_at: String(r.expires_at || \"\") };",
+      "append_style": false
+    },
+    {
+      "id": "c312-h3b-seat-relay-branch",
+      "note": "x-relay-token branch, same pass-through. This is the branch the Scout GPT Action authenticates on.",
+      "find": "    const r = await lookupToken(env, rt, null);\n    if (r.ok) return { seat: canonicalSeat(r.seat), source: canonicalSeat(r.seat) ? \"relay_tokens.actor_seat\" : \"relay_tokens row carries no actor_seat\" };",
+      "replace": "    const r = await lookupToken(env, rt, null);\n    if (r.ok) return { seat: canonicalSeat(r.seat), source: canonicalSeat(r.seat) ? \"relay_tokens.actor_seat\" : \"relay_tokens row carries no actor_seat\", token_id: r.token_id || null, expires_at: String(r.expires_at || \"\") };",
+      "append_style": false
+    },
+    {
+      "id": "c312-h4a-helper",
+      "note": "APPEND-STYLE AND DECLARED: the find appears inside its own replace. Safe under single application, unsafe if applied twice - the verifier must apply it once. Inserts sessionCredentialStatus() immediately above handleRelaySession().",
+      "find": "async function handleRelaySession(request, env) {",
+      "replace": "// v1.41.0 CARD 312 - CREDENTIAL EXPIRY IS REPORTED IN-BAND.\n// The lapse itself was always handled correctly: lookupToken's SELECT refuses an expired\n// row, so the seat simply stops resolving. What was missing was NOTICE - nothing told a\n// session that the credential it had just authenticated with was days from lapsing, so the\n// first signal anyone got was the outage. This reads the expires_at that lookupToken now\n// carries back. It never reads, renews, extends, mints or returns a token value, and it\n// changes no authentication or authorization decision.\nvar SESSION_EXPIRY_WARN_DAYS = 14;\nfunction sessionCredentialStatus(s) {\n  var raw = String((s && s.expires_at) || \"\").trim();\n  var tokenId = (s && s.token_id) || null;\n  if (!raw) {\n    return {\n      token_id: tokenId,\n      expires_at: \"\",\n      days_remaining: null,\n      state: \"no_expiry\",\n      note: \"This credential carries no expiry - an env-bound credential, or a stored row whose expires_at is unset. Nothing to renew and nothing to warn about.\"\n    };\n  }\n  var ms = Date.parse(raw.indexOf(\"T\") === -1 ? raw.replace(\" \", \"T\") + \"Z\" : raw);\n  if (!isFinite(ms)) {\n    return {\n      token_id: tokenId,\n      expires_at: raw,\n      days_remaining: null,\n      state: \"unreadable\",\n      note: \"expires_at is stored but could not be parsed, so no countdown is reported rather than a guessed one.\"\n    };\n  }\n  var days = Math.floor((ms - Date.now()) / 86400000);\n  var state = days <= SESSION_EXPIRY_WARN_DAYS ? \"expiring_soon\" : \"ok\";\n  return {\n    token_id: tokenId,\n    expires_at: raw,\n    days_remaining: days,\n    state: state,\n    note: state === \"expiring_soon\"\n      ? \"This credential lapses in \" + days + \" day(s). Renewal is a MINT plus a PASTE, never an edit of the existing row: mint a replacement, copy the plaintext once from /relay/token, and paste it into the calling client's key field. The current credential stays valid until it lapses on its own.\"\n      : \"Credential is current. Renewal, when it comes, is a mint plus a paste - the existing row is never edited.\"\n  };\n}\n\nasync function handleRelaySession(request, env) {",
+      "append_style": true
+    },
+    {
+      "id": "c312-h4b-session-credential-block",
+      "note": "APPEND-STYLE AND DECLARED: the find appears inside its own replace. Adds one field to the /relay/session response. No field is removed or renamed.",
+      "find": "    ok: true, version: VERSION,\n    bound_seat: seat,\n    seat_source: s.source,",
+      "replace": "    ok: true, version: VERSION,\n    bound_seat: seat,\n    seat_source: s.source,\n    credential: sessionCredentialStatus(s),",
+      "append_style": true
+    },
+    {
+      "id": "c312-h5-version",
+      "note": "1.40.0 -> 1.41.0.",
+      "find": "const VERSION = \"1.40.0\";",
+      "replace": "const VERSION = \"1.41.0\";",
+      "append_style": false
+    }
+  ]
+}
