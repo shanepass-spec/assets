@@ -110,7 +110,7 @@ function makeSrc(env, counter) {
 
 async function dstTables(env) {
   const { results } = await env.DST.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name"
+    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> '_mig_log' ORDER BY name"
   ).all();
   return (results || []).map(r => r.name);
 }
@@ -382,9 +382,71 @@ async function verify(env) {
   return { ok: failed.length === 0, failed: failed.length, checks: checks };
 }
 
+// --------------------------------------------------------------- run log
+//
+// Builder's environment cannot reach workers.dev — its egress is allowlisted —
+// so nothing outside Cloudflare can call /health, /run/* or /verify on this
+// worker. It CAN read D1. So this worker records its own progress and its own
+// audit result into the destination database, and that table is the channel.
+//
+// _mig_log is migration scaffolding, not migrated data. It is excluded from
+// every table listing above, so it never enters the copy or the reconciliation,
+// and it is dropped at teardown along with these workers.
+
+async function logEnsure(env) {
+  await env.DST.exec(
+    "CREATE TABLE IF NOT EXISTS _mig_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT (datetime('now')), phase TEXT NOT NULL, status TEXT NOT NULL, detail TEXT)");
+}
+
+async function logRun(env, phase, status, detail) {
+  try {
+    await logEnsure(env);
+    await env.DST.prepare('INSERT INTO _mig_log (phase, status, detail) VALUES (?,?,?)')
+      .bind(phase, status, JSON.stringify(detail || null).slice(0, 20000)).run();
+  } catch (e) { /* logging must never be the thing that fails a run */ }
+}
+
+// The cron driver. Resume is derived from the destination on every pass, so a
+// minute-by-minute trigger is a safe driver rather than a race: each firing
+// either continues the work or finds nothing to do. It stops on its own once
+// the audit passes.
+async function driveOnce(env, ctx, origin) {
+  const done = await env.DST.prepare(
+    "SELECT COUNT(*) AS n FROM _mig_log WHERE phase='complete' AND status='ok'").first().catch(() => null);
+  if (done && done.n > 0) return { idle: true, reason: 'already complete' };
+
+  const d1 = await runD1(env, ctx, origin, 0);
+  await logRun(env, 'd1', d1.error ? 'error' : (d1.done ? 'ok' : 'partial'), d1);
+  if (d1.error || !d1.done) return d1;
+
+  const r2 = await runR2(env, ctx, origin, 0, '');
+  await logRun(env, 'r2', r2.error ? 'error' : (r2.done ? 'ok' : 'partial'), r2);
+  if (r2.error || !r2.done) return r2;
+
+  const v = await verify(env);
+  await logRun(env, 'verify', v.ok ? 'ok' : 'failed', v);
+  if (v.ok) await logRun(env, 'complete', 'ok', { tables: (await dstTables(env)).length });
+  return v;
+}
+
 // ------------------------------------------------------------------ router
 
 export default {
+  // Cron entry point. Needs no caller, no signature and no reachable network
+  // path from outside Cloudflare — which is what makes the copy runnable at all
+  // given that nothing here can be called from Builder's environment.
+  async scheduled(event, env, ctx) {
+    if (!env.MIG_SECRET || !env.DST) {
+      await logRun(env, 'preflight', 'error', { error: 'missing MIG_SECRET or DST binding' });
+      return;
+    }
+    try {
+      await driveOnce(env, ctx, String(env.MIG_SELF_URL || ''));
+    } catch (e) {
+      await logRun(env, 'driver', 'error', { error: String(e && e.message || e).slice(0, 300) });
+    }
+  },
+
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const p = url.pathname;
@@ -406,7 +468,12 @@ export default {
     try {
       if (p === '/run/d1' && request.method === 'POST') return json(await runD1(env, ctx, url.origin, chain));
       if (p === '/run/r2' && request.method === 'POST') return json(await runR2(env, ctx, url.origin, chain, url.searchParams.get('cursor') || ''));
-      if (p === '/verify') { const v = await verify(env); return json(v, v.ok ? 200 : 409); }
+      if (p === '/verify') {
+        const v = await verify(env);
+        await logRun(env, 'verify', v.ok ? 'ok' : 'failed', v);
+        return json(v, v.ok ? 200 : 409);
+      }
+      if (p === '/run' && request.method === 'POST') return json(await driveOnce(env, ctx, url.origin));
       return json({ error: 'not_found' }, 404);
     } catch (e) {
       return json({ error: 'sink_error', detail: String(e && e.message || e).slice(0, 300) }, 500);

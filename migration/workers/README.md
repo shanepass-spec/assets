@@ -64,7 +64,11 @@ value is never sent to an agent, to Relay, or into a conversation.
 **1 — generate a one-time secret.** Any high-entropy value, roughly 40+
 characters. Generate it where you can copy it twice and then discard it.
 
-**2 — deploy `mig-source` to the personal account** with:
+**2 — deploy `mig-source` to the PERSONAL account** — `Shanepass@gmail.com`,
+`26c8013cfb2cf72dde19e55e6cf390b1`. This one matters: the church account also
+contains a database called `tabready`, but that is the **June partial copy**.
+A `mig-source` deployed into the church account would bind to it and read the
+wrong source entirely, and the copy would look like it worked. Bindings:
 
 | Kind | Name | Value |
 | --- | --- | --- |
@@ -93,12 +97,45 @@ would have forced a dashboard visit that is now unnecessary. Asking an operator
 to type a worker's own URL into that worker's own config is also a step that can
 be got wrong; deriving it cannot.
 
-**4 — confirm without revealing anything.** Open each worker's `/health`. Both
+**4 — add a cron trigger to `mig-sink`.** Any schedule; `* * * * *` is fine.
+This is what actually starts and drives the copy. Without it nothing runs,
+because no one outside Cloudflare can call the worker.
+
+**5 — confirm without revealing anything.** Open each worker's `/health`. Both
 must report their bindings `true` and `secret_present: true`. That is a
-presence check; it prints no value.
+presence check; it prints no value. Builder cannot open these — report what
+they say, or just let the cron run and Builder will read the outcome from
+`_mig_log`.
 
 Bindings drop on dashboard paste-deploys — check `/health` after every deploy,
 not just the first.
+
+## How the copy is actually started, and why
+
+**Builder cannot reach `workers.dev`.** Its egress is allowlisted — GitHub raw
+resolves, `workers.dev` and `api.cloudflare.com` do not. So nothing on the
+Builder side can call `/health`, `/run/*` or `/verify` on either worker. An
+earlier version of this plan assumed it could. It cannot.
+
+What Builder *can* reach is D1. So the loop is closed through the database
+instead of over HTTP:
+
+1. **A cron trigger on `mig-sink` drives the copy.** Add one in the dashboard —
+   `* * * * *` is fine. The `scheduled` handler needs no caller, no signature
+   and no inbound network path. Because progress is re-derived from the
+   destination on every pass, a minute-by-minute trigger is a safe driver
+   rather than a race: each firing either continues the work or finds nothing
+   to do, and it stops on its own once the audit passes.
+2. **`mig-sink` writes its own progress and its own audit result into
+   `_mig_log`** in the destination database. Builder reads that table directly
+   and reports from it.
+
+`_mig_log` is migration scaffolding, not migrated data. It is excluded from
+every table listing in the worker, so it never enters the copy or the
+reconciliation, and it is dropped at teardown along with the workers.
+
+The HTTP routes still exist and still work for anyone who *can* reach the
+worker — `POST /run` runs one full pass — but nothing depends on them.
 
 ## Running the copy
 
