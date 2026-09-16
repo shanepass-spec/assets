@@ -1,8 +1,14 @@
-# scout-claude-relay — governed patch specs
+# Governed patch specs
 
-These files are **patch specs, not deployable worker source**. Each one is a set of
-anchored find/replace hunks derived from a proven live base, kept here so the work
-survives a session and can be read without a Relay seat.
+These files are **patch specs, not deployable worker source**, one directory per worker.
+They deliberately live OUTSIDE `workers/` — `.github/workflows/deploy.yml` fires on any
+push to `main` touching `workers/**` and derives the worker to deploy from the second path
+segment, so a spec filed under `workers/<name>/` would have queued a deploy job for that
+worker. It would have failed closed (no `index.js` or `worker.js` to upload) rather than
+shipping anything, but it would have been a red run on `main` for a file that is not code.
+
+Each spec is a set of anchored find/replace hunks derived from a proven live base,
+kept here so the work survives a session and can be read without a Relay seat.
 
 A spec in this directory has **not** been registered, previewed, staged or deployed.
 Applying one is the control plane's job, through the governed lane:
@@ -33,6 +39,6 @@ and nothing in this directory should be read as claiming them.
 
 ## Specs
 
-- `card312-relay-key-expiry-4583-r1.json` — Relay credential expiry is reported in-band on
+- `scout-claude-relay/card312-relay-key-expiry-4583-r1.json` — Relay credential expiry is reported in-band on
   `/relay/session`, and the mint ceiling moves from 720 to 2160 hours per the owner ruling of
   2026-09-16. Mints nothing, rotates nothing, edits no existing token row, and reads no token value.
